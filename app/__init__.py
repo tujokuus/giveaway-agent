@@ -1,0 +1,2 @@
+"""Giveaway Agent application package."""
+
