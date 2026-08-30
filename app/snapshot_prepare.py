@@ -58,6 +58,10 @@ def prepare_snapshot_package(
             "final_url": child_snapshot.get("final_url") if child_snapshot else None,
             "title": child_snapshot.get("title") if child_snapshot else None,
             "visible_text": child_snapshot.get("visible_text", "") if child_snapshot else "",
+            "text_blocks": child_snapshot.get("text_blocks", []) if child_snapshot else [],
+            "embedded_legal_sections": child_snapshot.get(
+                "embedded_legal_sections", []
+            ) if child_snapshot else [],
             "manual_verification_required": bool(
                 child_snapshot and child_snapshot.get("manual_verification_required")
             ),
@@ -135,6 +139,10 @@ def prepare_snapshot_package(
             "final_url": root_snapshot.get("final_url"),
             "title": root_snapshot.get("title"),
             "visible_text": root_snapshot.get("visible_text", ""),
+            "text_blocks": root_snapshot.get("text_blocks", []),
+            "embedded_legal_sections": root_snapshot.get(
+                "embedded_legal_sections", []
+            ),
             "manual_verification_required": bool(
                 root_snapshot.get("manual_verification_required")
             ),

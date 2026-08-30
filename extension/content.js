@@ -5,6 +5,9 @@
   const MAX_ITEMS = 1000;
   const clean = (value, maximum = 2000) =>
     String(value || "").replace(/\s+/g, " ").trim().slice(0, maximum);
+  const cleanMultiline = (value, maximum = MAX_TEXT) =>
+    String(value || "").split(/\r?\n/).map((line) => clean(line, 5000))
+      .filter(Boolean).join("\n").slice(0, maximum);
   const queryDeep = (selector) => {
     const results = [];
     const visit = (root) => {
@@ -49,6 +52,13 @@
     if (/tietosuoja|privacy|henkilötieto|data protection/.test(normalized)) return "privacy";
     if (/käyttöeh|osallistumiseh|kilpailun säänn|arvonnan säänn|terms|rules/.test(normalized)) return "rules";
     return "generic";
+  };
+  const legalTypesFor = (text) => {
+    const normalized = clean(text).toLowerCase();
+    const types = [];
+    if (/tietosuoja|privacy|henkilötieto|data protection/.test(normalized)) types.push("privacy");
+    if (/käyttöeh|osallistumiseh|kilpailun säänn|arvonnan säänn|terms|rules/.test(normalized)) types.push("rules");
+    return types;
   };
 
   let nextRef = 1;
@@ -111,7 +121,39 @@
         purpose: purposeFor(`${text} ${contextFor(element) || ""}`)
       };
     });
-  const text = clean(document.body?.innerText, MAX_TEXT);
+  const seenBlocks = new Set();
+  const textBlocks = queryDeep(
+    "h1, h2, h3, h4, h5, h6, p, li, legend, [role=heading]"
+  ).filter(visible).map((element) => {
+    const text = clean(element.innerText, 5000);
+    const key = text.toLowerCase();
+    if (!text || seenBlocks.has(key)) return null;
+    seenBlocks.add(key);
+    return {
+      element_ref: reference(), frame_url: location.href,
+      tag: element.tagName.toLowerCase(), text,
+      visibility: "visible", purpose: purposeFor(text)
+    };
+  }).filter(Boolean).slice(0, 2000);
+
+  const hiddenSeen = new Set();
+  const embeddedLegalSections = queryDeep(
+    "dialog, [role=dialog], template, [hidden], [aria-hidden=true]"
+  ).map((element) => {
+    const rawText = element.tagName === "TEMPLATE"
+      ? element.content?.textContent : element.textContent;
+    const text = cleanMultiline(rawText, 30000);
+    const documentTypes = legalTypesFor(text);
+    const key = text.toLowerCase();
+    if (text.length < 40 || !documentTypes.length || hiddenSeen.has(key)) return null;
+    hiddenSeen.add(key);
+    return {
+      element_ref: reference(), frame_url: location.href,
+      document_types: documentTypes, text, visibility: visible(element) ? "visible" : "hidden"
+    };
+  }).filter(Boolean).slice(0, 50);
+
+  const text = cleanMultiline(document.body?.innerText, MAX_TEXT);
   const challengeText = `${document.title} ${text}`.toLowerCase();
   const manualVerification = [
     "just a moment", "verify you are human", "checking your browser",
@@ -120,7 +162,8 @@
   ].some((marker) => challengeText.includes(marker));
   return {
     url: location.href, title: clean(document.title), visible_text: text,
-    fields, links, buttons,
+    fields, links, buttons, text_blocks: textBlocks,
+    embedded_legal_sections: embeddedLegalSections,
     iframe_urls: queryDeep("iframe[src]").map((frame) => clean(frame.src, 4000))
       .filter((url) => url.startsWith("http://") || url.startsWith("https://")),
     manual_verification_required: manualVerification

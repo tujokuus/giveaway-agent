@@ -32,6 +32,7 @@ from app.snapshot_api import (
     load_or_create_api_token,
 )
 from app.snapshot_prepare import load_prepared_package, prepare_snapshot_package
+from app.snapshot_compact import compact_snapshot_package, load_compact_package
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -140,6 +141,20 @@ def build_parser() -> argparse.ArgumentParser:
     prepared_show_parser.add_argument("id", type=int, help="Entry snapshot task ID.")
     _add_database_argument(prepared_show_parser)
 
+    compact_parser = subparsers.add_parser(
+        "snapshot-compact",
+        help="Build and save a compact sourced evidence package.",
+    )
+    compact_parser.add_argument("id", type=int, help="Entry snapshot task ID.")
+    _add_database_argument(compact_parser)
+
+    compact_show_parser = subparsers.add_parser(
+        "compact-show",
+        help="Show a previously compacted evidence package.",
+    )
+    compact_show_parser.add_argument("id", type=int, help="Entry snapshot task ID.")
+    _add_database_argument(compact_show_parser)
+
     return parser
 
 
@@ -195,6 +210,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _prepare_browser_snapshot(args.database, args.id)
     if args.command == "prepared-show":
         return _show_prepared_snapshot(args.database, args.id)
+    if args.command == "snapshot-compact":
+        return _compact_browser_snapshot(args.database, args.id)
+    if args.command == "compact-show":
+        return _show_compact_snapshot(args.database, args.id)
 
     if args.timeout <= 0:
         print("Error: timeout must be greater than zero.", file=sys.stderr)
@@ -479,6 +498,47 @@ def _show_prepared_snapshot(database_path: Path, task_id: int) -> int:
         print(
             f"Prepared snapshot for task {task_id} was not found. "
             f"Run 'snapshot-prepare {task_id}' first.",
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps(package, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _compact_browser_snapshot(database_path: Path, task_id: int) -> int:
+    """Build, store, and summarize a compact evidence package."""
+
+    try:
+        with closing(connect_database(database_path)) as connection:
+            initialize_snapshot_schema(connection)
+            package = compact_snapshot_package(connection, task_id)
+    except (OSError, sqlite3.Error, json.JSONDecodeError, ValueError) as error:
+        print(f"Snapshot compact failed: {error}", file=sys.stderr)
+        return 1
+    stats = package["compaction"]
+    print(f"Compacted snapshot task {task_id} and saved it to SQLite.")
+    print(f"Evidence blocks: {stats['included_blocks']}/{stats['candidate_blocks']}")
+    print(f"Duplicate blocks removed: {stats['duplicates_removed']}")
+    print(f"Evidence characters: {stats['total_evidence_characters']}")
+    print(f"Omitted by limits: {stats['relevant_blocks_omitted_by_limits']}")
+    print(f"Use 'compact-show {task_id}' to print the compact JSON package.")
+    return 0
+
+
+def _show_compact_snapshot(database_path: Path, task_id: int) -> int:
+    """Print a stored compact evidence package as readable JSON."""
+
+    try:
+        with closing(connect_database(database_path)) as connection:
+            initialize_snapshot_schema(connection)
+            package = load_compact_package(connection, task_id)
+    except (OSError, sqlite3.Error, json.JSONDecodeError) as error:
+        print(f"Compact snapshot read failed: {error}", file=sys.stderr)
+        return 1
+    if package is None:
+        print(
+            f"Compact snapshot for task {task_id} was not found. "
+            f"Run 'snapshot-compact {task_id}' first.",
             file=sys.stderr,
         )
         return 1

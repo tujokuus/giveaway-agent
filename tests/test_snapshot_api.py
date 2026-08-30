@@ -66,6 +66,21 @@ def test_extension_can_claim_and_store_read_only_snapshot(tmp_path) -> None:
             }],
             "links": [],
             "buttons": [],
+            "text_blocks": [{
+                "element_ref": "f0_t1",
+                "frame_url": "https://example.test/giveaway/form",
+                "tag": "p",
+                "text": "Enter the giveaway",
+                "visibility": "visible",
+                "purpose": "generic",
+            }],
+            "embedded_legal_sections": [{
+                "element_ref": "f0_l1",
+                "frame_url": "https://example.test/giveaway/form",
+                "document_types": ["privacy"],
+                "text": "Privacy information already present in this hidden dialog.",
+                "visibility": "hidden",
+            }],
             "iframe_urls": [],
         },
     )
@@ -79,6 +94,8 @@ def test_extension_can_claim_and_store_read_only_snapshot(tmp_path) -> None:
     )
     assert fetched.status_code == 200
     assert fetched.json()["fields"][0]["label"] == "Email"
+    assert fetched.json()["text_blocks"][0]["element_ref"] == "f0_t1"
+    assert fetched.json()["embedded_legal_sections"][0]["visibility"] == "hidden"
 
     connection = sqlite3.connect(database_path)
     stored = connection.execute(

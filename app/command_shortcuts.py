@@ -91,5 +91,17 @@ def prepared_show() -> int:
     return _run("prepared-show")
 
 
+def snapshot_compact() -> int:
+    """Build and store a compact evidence package."""
+
+    return _run("snapshot-compact")
+
+
+def compact_show() -> int:
+    """Show a stored compact evidence package."""
+
+    return _run("compact-show")
+
+
 def show_help() -> int:
     return _run("help")

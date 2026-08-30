@@ -10,9 +10,16 @@ chrome.runtime.onStartup.addListener(() => void pollForTask());
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === POLL_ALARM) void pollForTask();
 });
-chrome.action.onClicked.addListener(() => chrome.runtime.openOptionsPage());
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "poll_now") void pollForTask();
+  if (message?.type === "capture_current_tab") {
+    captureCurrentTab().then(
+      (result) => sendResponse({ ok: true, ...result }),
+      (error) => sendResponse({ ok: false, error: error.message })
+    );
+    return true;
+  }
+  return false;
 });
 
 async function configuration() {
@@ -53,11 +60,16 @@ async function pollForTask() {
 
 async function openAndCapture(task) {
   const tab = await chrome.tabs.create({ url: task.url, active: true });
+  await chrome.storage.session.set({ [`taskForTab_${tab.id}`]: task });
   await waitForTab(tab.id, 60000);
   // Give client-rendered forms a moment to appear after the load event.
   await new Promise((resolve) => setTimeout(resolve, 2500));
+  await captureTabForTask(tab.id, task);
+}
+
+async function captureTabForTask(tabId, task) {
   const frameResults = await chrome.scripting.executeScript({
-    target: { tabId: tab.id, allFrames: true },
+    target: { tabId, allFrames: true },
     files: ["content.js"]
   });
   const snapshot = mergeFrames(task, frameResults);
@@ -66,6 +78,19 @@ async function openAndCapture(task) {
     body: JSON.stringify(snapshot)
   });
   if (!response.ok) throw new Error(`Snapshot upload failed: HTTP ${response.status}`);
+}
+
+async function captureCurrentTab() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) throw new Error("No active tab was found.");
+  const key = `taskForTab_${tab.id}`;
+  const stored = await chrome.storage.session.get(key);
+  const task = stored[key];
+  if (!task) {
+    throw new Error("This tab is not linked to a Giveaway Agent task.");
+  }
+  await captureTabForTask(tab.id, task);
+  return { taskId: task.id };
 }
 
 function waitForTab(tabId, timeoutMs) {
@@ -109,6 +134,10 @@ function mergeFrames(task, executionResults) {
     fields: frames.flatMap((frame) => prefixItems(frame.fields, frame.frameId)).slice(0, 1000),
     links: frames.flatMap((frame) => prefixItems(frame.links, frame.frameId)).slice(0, 2000),
     buttons: frames.flatMap((frame) => prefixItems(frame.buttons, frame.frameId)).slice(0, 1000),
+    text_blocks: frames.flatMap((frame) => prefixItems(frame.text_blocks || [], frame.frameId)).slice(0, 2000),
+    embedded_legal_sections: frames.flatMap((frame) =>
+      prefixItems(frame.embedded_legal_sections || [], frame.frameId)
+    ).slice(0, 50),
     iframe_urls: [...new Set(frames.flatMap((frame) => frame.iframe_urls))].slice(0, 500)
   };
 }

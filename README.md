@@ -228,6 +228,36 @@ The same persisted package is available to a later local analysis client at:
 GET /api/v1/tasks/{entry_task_id}/prepared
 ```
 
+## Compact evidence package
+
+New snapshots contain referenced visible text blocks and legal text that is
+already present inside hidden DOM dialogs or templates. Reading hidden DOM does
+not click or execute the page. Each block has a stable source reference.
+
+Create a smaller analysis input after the entry and linked legal documents have
+been captured:
+
+```powershell
+snapshot-compact 10
+compact-show 10
+```
+
+The compact operation is deterministic and uses no LLM. It removes exact
+normalized duplicates, retains evidence about participation, prizes, deadlines,
+eligibility, phone use, marketing, personal-data use, recipients, retention,
+winner contact, privacy and rules, and applies per-source and total character
+limits. The complete snapshots and prepared package remain unchanged in SQLite.
+The compact package is stored in `compact_snapshots` and is also available at:
+
+```text
+GET /api/v1/tasks/{entry_task_id}/compact
+```
+
+For a legal modal whose content appears only after interaction, open the modal
+yourself in the tab originally opened by Giveaway Agent. Click the extension
+icon and choose **Capture current tab**. The extension reads the now-visible DOM
+and stores a new snapshot for the same task; it does not open the modal itself.
+
 The extension polls the API, opens the queued URL in a normal tab, reads the
 visible DOM in every permitted frame, and stores a validated JSON snapshot in
 the local SQLite database. Stored data includes visible text, field metadata,

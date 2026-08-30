@@ -70,6 +70,8 @@ def test_help_command_lists_available_commands(capsys) -> None:
     assert "snapshot-check" in output.out
     assert "snapshot-prepare" in output.out
     assert "prepared-show" in output.out
+    assert "snapshot-compact" in output.out
+    assert "compact-show" in output.out
     assert "Show all available commands." in output.out
 
 

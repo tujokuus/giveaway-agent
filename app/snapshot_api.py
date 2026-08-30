@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 from app.database import DEFAULT_DATABASE_PATH, connect_database, initialize_database
 from app.snapshot_prepare import initialize_prepared_schema, load_prepared_package
+from app.snapshot_compact import initialize_compact_schema, load_compact_package
 
 
 DEFAULT_TOKEN_PATH = DEFAULT_DATABASE_PATH.parent / "extension_api.token"
@@ -95,6 +96,31 @@ class SnapshotButton(BaseModel):
     purpose: Literal["generic", "privacy", "rules", "consent"] = "generic"
 
 
+class SnapshotTextBlock(BaseModel):
+    """One referenced visible text block from the DOM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    element_ref: str = Field(min_length=1, max_length=100)
+    frame_url: str = Field(max_length=4_000)
+    tag: str = Field(max_length=30)
+    text: str = Field(min_length=1, max_length=5_000)
+    visibility: Literal["visible"] = "visible"
+    purpose: Literal["generic", "privacy", "rules", "consent"] = "generic"
+
+
+class EmbeddedLegalSection(BaseModel):
+    """Legal text already present in a page without interacting with it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    element_ref: str = Field(min_length=1, max_length=100)
+    frame_url: str = Field(max_length=4_000)
+    document_types: list[Literal["privacy", "rules"]] = Field(max_length=2)
+    text: str = Field(min_length=1, max_length=30_000)
+    visibility: Literal["visible", "hidden"]
+
+
 class BrowserSnapshot(BaseModel):
     """Validated, untrusted page data captured without form interaction."""
 
@@ -112,6 +138,10 @@ class BrowserSnapshot(BaseModel):
     fields: list[SnapshotField] = Field(default_factory=list, max_length=1_000)
     links: list[SnapshotLink] = Field(default_factory=list, max_length=2_000)
     buttons: list[SnapshotButton] = Field(default_factory=list, max_length=1_000)
+    text_blocks: list[SnapshotTextBlock] = Field(default_factory=list, max_length=2_000)
+    embedded_legal_sections: list[EmbeddedLegalSection] = Field(
+        default_factory=list, max_length=50
+    )
     iframe_urls: list[str] = Field(default_factory=list, max_length=500)
 
 
@@ -161,7 +191,8 @@ def initialize_snapshot_schema(connection: sqlite3.Connection) -> None:
                 "ADD COLUMN document_type TEXT NOT NULL DEFAULT 'entry'"
             )
         initialize_prepared_schema(connection)
-        connection.execute("PRAGMA user_version = 7")
+        initialize_compact_schema(connection)
+        connection.execute("PRAGMA user_version = 8")
 
 
 def create_app(
@@ -363,6 +394,19 @@ def create_app(
             package = load_prepared_package(connection, task_id)
         if package is None:
             raise HTTPException(status_code=404, detail="Prepared snapshot not found")
+        return package
+
+    @application.get(
+        "/api/v1/tasks/{task_id}/compact",
+        dependencies=[Depends(authorize)],
+    )
+    def get_compact(task_id: int) -> dict:
+        """Return a persisted compact evidence package for later analysis."""
+
+        with closing(connect_database(database_path)) as connection:
+            package = load_compact_package(connection, task_id)
+        if package is None:
+            raise HTTPException(status_code=404, detail="Compact snapshot not found")
         return package
 
     return application

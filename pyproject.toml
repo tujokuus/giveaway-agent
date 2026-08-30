@@ -37,6 +37,8 @@ snapshot-show = "app.command_shortcuts:snapshot_show"
 snapshot-check = "app.command_shortcuts:snapshot_check"
 snapshot-prepare = "app.command_shortcuts:snapshot_prepare"
 prepared-show = "app.command_shortcuts:prepared_show"
+snapshot-compact = "app.command_shortcuts:snapshot_compact"
+compact-show = "app.command_shortcuts:compact_show"
 giveaway-help = "app.command_shortcuts:show_help"
 
 [tool.pytest.ini_options]
