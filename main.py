@@ -1,11 +1,19 @@
 """Command-line entry point for Giveaway Agent."""
 
 import argparse
+import sqlite3
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 import httpx
 
+from app.database import (
+    DEFAULT_DATABASE_PATH,
+    connect_database,
+    initialize_database,
+    save_competitions,
+)
 from app.discovery import CompetitionCandidate
 from app.fetching import DEFAULT_TIMEOUT_SECONDS, FetchedPage, fetch_page
 from app.sources.kilpailumaailma import SOURCE
@@ -26,13 +34,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     discover_parser = subparsers.add_parser(
         "discover",
-        help=f"Find competition cards from {SOURCE.name}.",
+        help=f"Find and save competition cards from {SOURCE.name}.",
     )
     discover_parser.add_argument(
         "url",
         nargs="?",
         default=SOURCE.default_url,
         help=f"Listing page URL (default: {SOURCE.default_url}).",
+    )
+    discover_parser.add_argument(
+        "--database",
+        type=Path,
+        default=DEFAULT_DATABASE_PATH,
+        help=f"SQLite database path (default: {DEFAULT_DATABASE_PATH}).",
     )
     _add_timeout_argument(discover_parser)
 
@@ -68,10 +82,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "fetch":
         _print_fetch_summary(page)
-    else:
-        _print_discovered_competitions(page)
+        return 0
 
-    return 0
+    return _discover_and_save(page, args.database)
 
 
 def _print_fetch_summary(page: FetchedPage) -> None:
@@ -83,14 +96,39 @@ def _print_fetch_summary(page: FetchedPage) -> None:
     print(f"HTML length: {len(page.html)} characters")
 
 
-def _print_discovered_competitions(page: FetchedPage) -> None:
-    """Extract and print competition candidates from a downloaded listing."""
+def _discover_and_save(page: FetchedPage, database_path: Path) -> int:
+    """Extract competitions and persist the complete discovery batch."""
 
     candidates = SOURCE.discover(page.html, page_url=page.final_url)
+
+    try:
+        connection = connect_database(database_path)
+        try:
+            initialize_database(connection)
+            summary = save_competitions(connection, candidates)
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, ValueError) as error:
+        print(f"Database save failed: {error}", file=sys.stderr)
+        return 1
+
     print(f"Found {len(candidates)} competition(s) from {SOURCE.name}.")
+    print(f"New: {summary.inserted}")
+    print(f"Updated: {summary.updated}")
+    print(f"Database: {_display_database_path(database_path)}")
 
     for index, candidate in enumerate(candidates, start=1):
         _print_candidate(index, candidate)
+
+    return 0
+
+
+def _display_database_path(database_path: Path) -> str:
+    """Return a readable database path without changing SQLite special names."""
+
+    if str(database_path) == ":memory:":
+        return ":memory:"
+    return str(database_path.resolve())
 
 
 def _print_candidate(index: int, candidate: CompetitionCandidate) -> None:

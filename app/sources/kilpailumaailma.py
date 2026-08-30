@@ -54,6 +54,10 @@ class KilpailumaailmaSource(CompetitionSource):
             details_text = _find_details_text(card, self.details_selector)
             details = _parse_labeled_details(details_text)
 
+            # Promotional articles can share the same card markup as competitions.
+            if not details.get("Arvonta päättyy") or not details.get("Palkinto"):
+                continue
+
             platforms = tuple(
                 platform.strip()
                 for platform in details.get("Alusta", "").split(",")
