@@ -54,7 +54,7 @@ def test_initialize_database_creates_competitions_table(database) -> None:
     ).fetchone()
 
     assert table["name"] == "competitions"
-    assert database.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert database.execute("PRAGMA user_version").fetchone()[0] == 6
 
 
 def test_save_page_inspection_preserves_fields_and_relevant_links(database) -> None:
@@ -120,7 +120,7 @@ def test_initialize_database_migrates_existing_inspection_table() -> None:
     assert "manual_review_required" in columns
     assert "network_urls_json" in columns
     assert "iframe_urls_json" in columns
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 6
     connection.close()
 
 

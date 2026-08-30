@@ -41,5 +41,13 @@ def inspect() -> int:
     return _run("inspect")
 
 
+def snapshot_serve() -> int:
+    return _run("snapshot-serve")
+
+
+def extension_inspect() -> int:
+    return _run("extension-inspect")
+
+
 def show_help() -> int:
     return _run("help")

@@ -1,0 +1,320 @@
+"""Read-only localhost API for Chrome Extension page snapshots."""
+
+import secrets
+import sqlite3
+from contextlib import closing
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Annotated, Literal
+from urllib.parse import urlsplit
+
+from fastapi import Depends, FastAPI, Header, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+
+from app.database import DEFAULT_DATABASE_PATH, connect_database, initialize_database
+
+
+DEFAULT_TOKEN_PATH = DEFAULT_DATABASE_PATH.parent / "extension_api.token"
+SNAPSHOT_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS extension_tasks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    competition_id INTEGER,
+    url TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    claimed_at TEXT,
+    completed_at TEXT,
+    error_message TEXT,
+    FOREIGN KEY (competition_id) REFERENCES competitions (id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_extension_tasks_status
+ON extension_tasks (status, id);
+
+CREATE TABLE IF NOT EXISTS browser_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id INTEGER NOT NULL,
+    competition_id INTEGER,
+    requested_url TEXT NOT NULL,
+    final_url TEXT NOT NULL,
+    page_title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    manual_verification_required INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    FOREIGN KEY (task_id) REFERENCES extension_tasks (id) ON DELETE CASCADE,
+    FOREIGN KEY (competition_id) REFERENCES competitions (id) ON DELETE SET NULL
+);
+"""
+
+
+class SnapshotField(BaseModel):
+    """One read-only form control observed by the extension."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    element_ref: str = Field(min_length=1, max_length=100)
+    frame_url: str = Field(max_length=4_000)
+    tag: str = Field(max_length=30)
+    field_type: str = Field(max_length=50)
+    name: str | None = Field(default=None, max_length=500)
+    label: str | None = Field(default=None, max_length=2_000)
+    required: bool
+    disabled: bool
+    checked: bool | None = None
+    value_present: bool
+    options: list[str] = Field(default_factory=list, max_length=200)
+
+
+class SnapshotLink(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    element_ref: str = Field(min_length=1, max_length=100)
+    frame_url: str = Field(max_length=4_000)
+    text: str = Field(max_length=2_000)
+    url: str = Field(max_length=4_000)
+
+
+class SnapshotButton(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    element_ref: str = Field(min_length=1, max_length=100)
+    frame_url: str = Field(max_length=4_000)
+    text: str = Field(max_length=2_000)
+    button_type: str = Field(max_length=50)
+    disabled: bool
+
+
+class BrowserSnapshot(BaseModel):
+    """Validated, untrusted page data captured without form interaction."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    task_id: int = Field(gt=0)
+    requested_url: HttpUrl
+    final_url: HttpUrl
+    title: str = Field(max_length=2_000)
+    captured_at: datetime
+    status: Literal["captured", "manual_verification_required"]
+    manual_verification_required: bool
+    visible_text: str = Field(max_length=100_000)
+    fields: list[SnapshotField] = Field(default_factory=list, max_length=1_000)
+    links: list[SnapshotLink] = Field(default_factory=list, max_length=2_000)
+    buttons: list[SnapshotButton] = Field(default_factory=list, max_length=1_000)
+    iframe_urls: list[str] = Field(default_factory=list, max_length=500)
+
+
+class TaskCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    competition_id: int | None = Field(default=None, gt=0)
+    url: HttpUrl
+
+
+class TaskResponse(BaseModel):
+    id: int
+    competition_id: int | None
+    url: str
+    status: str
+    created_at: str
+
+
+def load_or_create_api_token(token_path: Path = DEFAULT_TOKEN_PATH) -> str:
+    """Return the local extension token, creating it with restrictive defaults."""
+
+    token_path.parent.mkdir(parents=True, exist_ok=True)
+    if token_path.exists():
+        token = token_path.read_text(encoding="utf-8").strip()
+        if token:
+            return token
+    token = secrets.token_urlsafe(32)
+    token_path.write_text(token, encoding="utf-8")
+    return token
+
+
+def initialize_snapshot_schema(connection: sqlite3.Connection) -> None:
+    with connection:
+        connection.executescript(SNAPSHOT_SCHEMA_SQL)
+        connection.execute("PRAGMA user_version = 6")
+
+
+def create_app(
+    *,
+    database_path: str | Path = DEFAULT_DATABASE_PATH,
+    api_token: str | None = None,
+) -> FastAPI:
+    """Create a localhost API with an explicit shared token."""
+
+    database_path = Path(database_path)
+    expected_token = api_token or load_or_create_api_token()
+    with closing(connect_database(database_path)) as connection:
+        initialize_database(connection)
+        initialize_snapshot_schema(connection)
+
+    application = FastAPI(title="Giveaway Agent Snapshot API", version="0.1.0")
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origin_regex=r"chrome-extension://[a-z]+",
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Content-Type", "X-Giveaway-Agent-Token"],
+    )
+
+    def authorize(
+        supplied: Annotated[str | None, Header(alias="X-Giveaway-Agent-Token")] = None,
+    ) -> None:
+        if supplied is None or not secrets.compare_digest(supplied, expected_token):
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
+
+    @application.get("/health")
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @application.post(
+        "/api/v1/tasks",
+        response_model=TaskResponse,
+        dependencies=[Depends(authorize)],
+    )
+    def create_task(payload: TaskCreate) -> TaskResponse:
+        timestamp = _timestamp()
+        with closing(connect_database(database_path)) as connection, connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO extension_tasks (competition_id, url, status, created_at)
+                VALUES (?, ?, 'queued', ?)
+                """,
+                (payload.competition_id, str(payload.url), timestamp),
+            )
+            task_id = cursor.lastrowid
+        return TaskResponse(
+            id=task_id,
+            competition_id=payload.competition_id,
+            url=str(payload.url),
+            status="queued",
+            created_at=timestamp,
+        )
+
+    @application.get(
+        "/api/v1/tasks/next",
+        response_model=TaskResponse | None,
+        dependencies=[Depends(authorize)],
+    )
+    def claim_next_task() -> TaskResponse | None:
+        with closing(connect_database(database_path)) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM extension_tasks WHERE status = 'queued' ORDER BY id LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            claimed_at = _timestamp()
+            connection.execute(
+                "UPDATE extension_tasks SET status = 'opening', claimed_at = ? WHERE id = ?",
+                (claimed_at, row["id"]),
+            )
+        return TaskResponse(
+            id=row["id"],
+            competition_id=row["competition_id"],
+            url=row["url"],
+            status="opening",
+            created_at=row["created_at"],
+        )
+
+    @application.post(
+        "/api/v1/tasks/{task_id}/snapshot",
+        dependencies=[Depends(authorize)],
+    )
+    def submit_snapshot(task_id: int, snapshot: BrowserSnapshot) -> dict[str, object]:
+        if task_id != snapshot.task_id:
+            raise HTTPException(status_code=400, detail="Task ID mismatch")
+        with closing(connect_database(database_path)) as connection, connection:
+            task = connection.execute(
+                "SELECT * FROM extension_tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+            if task is None:
+                raise HTTPException(status_code=404, detail="Task not found")
+            if _normalized_url(task["url"]) != _normalized_url(str(snapshot.requested_url)):
+                raise HTTPException(status_code=400, detail="Requested URL mismatch")
+            payload_json = snapshot.model_dump_json()
+            connection.execute(
+                """
+                INSERT INTO browser_snapshots (
+                    task_id, competition_id, requested_url, final_url, page_title,
+                    status, manual_verification_required, payload_json, captured_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    task["competition_id"],
+                    str(snapshot.requested_url),
+                    str(snapshot.final_url),
+                    snapshot.title,
+                    snapshot.status,
+                    int(snapshot.manual_verification_required),
+                    payload_json,
+                    snapshot.captured_at.astimezone(UTC).isoformat(),
+                ),
+            )
+            task_status = (
+                "manual_verification_required"
+                if snapshot.manual_verification_required
+                else "captured"
+            )
+            connection.execute(
+                "UPDATE extension_tasks SET status = ?, completed_at = ? WHERE id = ?",
+                (task_status, _timestamp(), task_id),
+            )
+        return {"task_id": task_id, "status": task_status, "stored": True}
+
+    @application.get(
+        "/api/v1/tasks/{task_id}",
+        response_model=TaskResponse,
+        dependencies=[Depends(authorize)],
+    )
+    def get_task(task_id: int) -> TaskResponse:
+        with closing(connect_database(database_path)) as connection:
+            row = connection.execute(
+                "SELECT * FROM extension_tasks WHERE id = ?", (task_id,)
+            ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return TaskResponse(
+            id=row["id"],
+            competition_id=row["competition_id"],
+            url=row["url"],
+            status=row["status"],
+            created_at=row["created_at"],
+        )
+
+    @application.get(
+        "/api/v1/tasks/{task_id}/snapshot",
+        response_model=BrowserSnapshot,
+        dependencies=[Depends(authorize)],
+    )
+    def get_snapshot(task_id: int) -> BrowserSnapshot:
+        """Return the latest validated snapshot for a later analysis agent."""
+
+        with closing(connect_database(database_path)) as connection:
+            row = connection.execute(
+                """
+                SELECT payload_json FROM browser_snapshots
+                WHERE task_id = ? ORDER BY id DESC LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Snapshot not found")
+        return BrowserSnapshot.model_validate_json(row["payload_json"])
+
+    return application
+
+
+def _timestamp() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _normalized_url(url: str) -> str:
+    parts = urlsplit(url)
+    return parts._replace(fragment="").geturl().rstrip("/")

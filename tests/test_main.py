@@ -63,7 +63,8 @@ def test_help_command_lists_available_commands(capsys) -> None:
 
     output = capsys.readouterr()
     assert exit_code == 0
-    assert "{help,fetch,discover,list,show,inspect}" in output.out
+    assert "snapshot-serve" in output.out
+    assert "extension-inspect" in output.out
     assert "Show all available commands." in output.out
 
 

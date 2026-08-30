@@ -147,3 +147,45 @@ python main.py fetch https://example.com --timeout 20
 ```powershell
 python -m pytest
 ```
+
+## Read-only Chrome Extension snapshot pipeline
+
+This MVP uses a separate normal Chrome profile instead of Incognito. Chrome
+profiles keep cookies, extensions, history, and settings isolated from the
+user's normal profile while allowing a human verification session to persist.
+The extension manifest explicitly disables Incognito access.
+
+Install dependencies and start the localhost API in the first PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[dev]"
+snapshot-serve
+```
+
+The server creates `data/extension_api.token` and prints its path. In the
+dedicated Chrome profile, open `chrome://extensions`, enable Developer mode,
+choose **Load unpacked**, and select this repository's `extension` directory.
+Open the extension options and paste the token file's contents. Keep the
+backend URL as `http://127.0.0.1:8765`.
+
+Queue all entry URLs for one stored competition in a second PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+extension-inspect 4
+```
+
+The extension polls the API, opens the queued URL in a normal tab, reads the
+visible DOM in every permitted frame, and stores a validated JSON snapshot in
+the local SQLite database. Stored data includes visible text, field metadata,
+labels, checkboxes, links, buttons, iframe URLs, and whether a field already
+contains a value. Actual field values are never included.
+
+A later local analysis agent can read a stored snapshot through the authenticated
+endpoint `GET /api/v1/tasks/{task_id}/snapshot`. Returned page content remains
+untrusted data and must never be treated as agent instructions.
+
+The extension contains no clicking, filling, selecting, checking, JavaScript
+evaluation requested by a model, or form submission features. CAPTCHA and
+Cloudflare pages are marked `manual_verification_required` for the user.

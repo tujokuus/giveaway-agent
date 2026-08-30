@@ -24,6 +24,7 @@ from app.discovery import CompetitionCandidate
 from app.fetching import DEFAULT_TIMEOUT_SECONDS, FetchedPage, fetch_page
 from app.sources.kilpailumaailma import SOURCE
 from app.page_inspection import PageInspection, inspect_pages
+from app.snapshot_api import DEFAULT_TOKEN_PATH, create_app, load_or_create_api_token
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -81,6 +82,23 @@ def build_parser() -> argparse.ArgumentParser:
     _add_database_argument(inspect_parser)
     _add_timeout_argument(inspect_parser)
 
+    serve_parser = subparsers.add_parser(
+        "snapshot-serve",
+        help="Run the read-only Chrome Extension snapshot API on localhost.",
+    )
+    _add_database_argument(serve_parser)
+    serve_parser.add_argument("--port", type=int, default=8765)
+    serve_parser.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN_PATH)
+
+    extension_parser = subparsers.add_parser(
+        "extension-inspect",
+        help="Queue a stored competition for the read-only Chrome Extension.",
+    )
+    extension_parser.add_argument("id", type=int, help="Competition database ID.")
+    _add_database_argument(extension_parser)
+    extension_parser.add_argument("--server", default="http://127.0.0.1:8765")
+    extension_parser.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN_PATH)
+
     return parser
 
 
@@ -120,6 +138,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _list_stored_competitions(args.database)
     if args.command == "show":
         return _show_stored_competition(args.database, args.id)
+    if args.command == "snapshot-serve":
+        return _serve_snapshot_api(args.database, args.port, args.token_file)
+    if args.command == "extension-inspect":
+        return _queue_extension_inspection(
+            args.database, args.id, args.server, args.token_file
+        )
 
     if args.timeout <= 0:
         print("Error: timeout must be greater than zero.", file=sys.stderr)
@@ -149,6 +173,67 @@ def _print_fetch_summary(page: FetchedPage) -> None:
     print(f"Final URL: {page.final_url}")
     print(f"Status: {page.status_code}")
     print(f"HTML length: {len(page.html)} characters")
+
+
+def _serve_snapshot_api(database_path: Path, port: int, token_path: Path) -> int:
+    """Run the authenticated local API used by the Chrome Extension."""
+
+    if not 1 <= port <= 65535:
+        print("Error: port must be between 1 and 65535.", file=sys.stderr)
+        return 2
+    import uvicorn
+
+    token = load_or_create_api_token(token_path)
+    application = create_app(database_path=database_path, api_token=token)
+    print(f"Snapshot API: http://127.0.0.1:{port}")
+    print(f"Extension token file: {token_path.resolve()}")
+    print("This server accepts read-only page snapshots; press Ctrl+C to stop.")
+    uvicorn.run(application, host="127.0.0.1", port=port, log_level="info")
+    return 0
+
+
+def _queue_extension_inspection(
+    database_path: Path,
+    competition_id: int,
+    server: str,
+    token_path: Path,
+) -> int:
+    """Queue every entry URL for a competition through the localhost API."""
+
+    try:
+        with closing(connect_database(database_path)) as connection:
+            initialize_database(connection)
+            competition = get_competition(connection, competition_id)
+    except (OSError, sqlite3.Error) as error:
+        print(f"Database read failed: {error}", file=sys.stderr)
+        return 1
+    if competition is None:
+        print(f"Competition with ID {competition_id} was not found.", file=sys.stderr)
+        return 1
+    if not competition.entry_urls:
+        print("This competition has no entry URLs to queue.", file=sys.stderr)
+        return 1
+    try:
+        token = token_path.read_text(encoding="utf-8").strip()
+    except OSError as error:
+        print(f"Token read failed: {error}", file=sys.stderr)
+        return 1
+    try:
+        for url in competition.entry_urls:
+            response = httpx.post(
+                f"{server.rstrip('/')}/api/v1/tasks",
+                headers={"X-Giveaway-Agent-Token": token},
+                json={"competition_id": competition_id, "url": url},
+                timeout=10,
+            )
+            response.raise_for_status()
+            task = response.json()
+            print(f"Queued task {task['id']}: {url}")
+    except (httpx.HTTPError, ValueError, KeyError) as error:
+        print(f"Queue request failed: {error}", file=sys.stderr)
+        return 1
+    print("The dedicated Chrome profile will open and read the queued URL.")
+    return 0
 
 
 def _discover_and_save(page: FetchedPage, database_path: Path) -> int:
