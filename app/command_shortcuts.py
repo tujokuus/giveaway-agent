@@ -103,5 +103,11 @@ def compact_show() -> int:
     return _run("compact-show")
 
 
+def snapshot_run() -> int:
+    """Run the complete read-only pipeline for one competition."""
+
+    return _run("snapshot-run")
+
+
 def show_help() -> int:
     return _run("help")

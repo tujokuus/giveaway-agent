@@ -4,6 +4,7 @@ import argparse
 import json
 import sqlite3
 import sys
+import time
 from collections.abc import Sequence
 from contextlib import closing
 from pathlib import Path
@@ -107,6 +108,25 @@ def build_parser() -> argparse.ArgumentParser:
     extension_parser.add_argument("--server", default="http://127.0.0.1:8765")
     extension_parser.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN_PATH)
 
+    run_parser = subparsers.add_parser(
+        "snapshot-run",
+        help="Read, prepare, compact, and show one stored competition.",
+    )
+    run_parser.add_argument(
+        "id",
+        type=int,
+        help="Competition database ID from the 'list' command.",
+    )
+    _add_database_argument(run_parser)
+    run_parser.add_argument("--server", default="http://127.0.0.1:8765")
+    run_parser.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN_PATH)
+    run_parser.add_argument(
+        "--wait",
+        type=float,
+        default=180,
+        help="Maximum seconds to wait for Chrome snapshots (default: 180).",
+    )
+
     snapshots_parser = subparsers.add_parser(
         "snapshots",
         help="List Chrome Extension snapshot tasks stored in SQLite.",
@@ -199,6 +219,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "extension-inspect":
         return _queue_extension_inspection(
             args.database, args.id, args.server, args.token_file
+        )
+    if args.command == "snapshot-run":
+        return _run_complete_snapshot_pipeline(
+            args.database, args.id, args.server, args.token_file, args.wait
         )
     if args.command == "snapshots":
         return _list_snapshot_tasks(args.database)
@@ -304,6 +328,125 @@ def _queue_extension_inspection(
         return 1
     print("The dedicated Chrome profile will open and read the queued URL.")
     return 0
+
+
+def _run_complete_snapshot_pipeline(
+    database_path: Path,
+    competition_id: int,
+    server: str,
+    token_path: Path,
+    wait_seconds: float,
+) -> int:
+    """Run the complete read-only snapshot pipeline using tracked task IDs."""
+
+    if wait_seconds <= 0:
+        print("Error: wait time must be greater than zero.", file=sys.stderr)
+        return 2
+    try:
+        with closing(connect_database(database_path)) as connection:
+            initialize_database(connection)
+            competition = get_competition(connection, competition_id)
+    except (OSError, sqlite3.Error) as error:
+        print(f"Database read failed: {error}", file=sys.stderr)
+        return 1
+    if competition is None:
+        print(
+            f"Competition with ID {competition_id} was not found. "
+            "Run 'list' to see valid competition IDs.",
+            file=sys.stderr,
+        )
+        return 1
+    if not competition.entry_urls:
+        print("This competition has no entry URLs to read.", file=sys.stderr)
+        return 1
+    try:
+        token = token_path.read_text(encoding="utf-8").strip()
+    except OSError as error:
+        print(f"Token read failed: {error}", file=sys.stderr)
+        return 1
+
+    root_task_ids = []
+    try:
+        for url in competition.entry_urls:
+            response = httpx.post(
+                f"{server.rstrip('/')}/api/v1/tasks",
+                headers={"X-Giveaway-Agent-Token": token},
+                json={"competition_id": competition_id, "url": url},
+                timeout=10,
+            )
+            response.raise_for_status()
+            task_id = int(response.json()["id"])
+            root_task_ids.append(task_id)
+            print(f"Queued entry task {task_id}: {url}")
+    except (httpx.HTTPError, ValueError, KeyError) as error:
+        print(f"Queue request failed: {error}", file=sys.stderr)
+        print("Make sure 'server' is running.", file=sys.stderr)
+        return 1
+
+    for root_task_id in root_task_ids:
+        print(f"Waiting for entry task {root_task_id} and its legal documents...")
+        error = _wait_for_snapshot_tree(
+            database_path,
+            root_task_id,
+            time.monotonic() + wait_seconds,
+        )
+        if error:
+            print(error, file=sys.stderr)
+            return 1
+        print(f"Using snapshot task ID {root_task_id} for prepare and compact.")
+        if _prepare_browser_snapshot(database_path, root_task_id) != 0:
+            return 1
+        if _compact_browser_snapshot(database_path, root_task_id) != 0:
+            return 1
+        print()
+        print(f"Compact package for snapshot task {root_task_id}:")
+        if _show_compact_snapshot(database_path, root_task_id) != 0:
+            return 1
+    return 0
+
+
+def _wait_for_snapshot_tree(
+    database_path: Path,
+    root_task_id: int,
+    deadline: float,
+) -> str | None:
+    """Wait until an entry task and all currently related tasks are terminal."""
+
+    terminal = {"captured", "manual_verification_required"}
+    previous_summary = None
+    while time.monotonic() < deadline:
+        try:
+            with closing(connect_database(database_path)) as connection:
+                initialize_snapshot_schema(connection)
+                rows = connection.execute(
+                    """
+                    SELECT id, status, document_type
+                    FROM extension_tasks
+                    WHERE id = ? OR parent_task_id = ?
+                    ORDER BY id
+                    """,
+                    (root_task_id, root_task_id),
+                ).fetchall()
+        except (OSError, sqlite3.Error) as error:
+            return f"Snapshot status read failed: {error}"
+        if not rows:
+            return f"Snapshot task {root_task_id} disappeared from the database."
+        summary = ", ".join(
+            f"{row['id']}:{row['document_type']}={row['status']}" for row in rows
+        )
+        if summary != previous_summary:
+            print(f"  {summary}")
+            previous_summary = summary
+        root = next((row for row in rows if row["id"] == root_task_id), None)
+        if root and root["status"] in terminal and all(
+            row["status"] in terminal for row in rows
+        ):
+            return None
+        time.sleep(1)
+    return (
+        f"Timed out while waiting for snapshot task {root_task_id}. "
+        "Chrome or a legal-document page may still need manual attention."
+    )
 
 
 def _list_snapshot_tasks(database_path: Path) -> int:

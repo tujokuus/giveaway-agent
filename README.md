@@ -253,6 +253,19 @@ The compact package is stored in `compact_snapshots` and is also available at:
 GET /api/v1/tasks/{entry_task_id}/compact
 ```
 
+Run the complete read-only pipeline with one command. The argument is the
+competition ID printed by `list`, not a snapshot task ID:
+
+```powershell
+snapshot-run 4
+```
+
+This queues every entry URL for competition 4, remembers the returned entry
+task IDs, waits for the entry and related privacy/rules tasks, prepares and
+compacts each entry task, and prints each compact JSON package. The default wait
+limit is 180 seconds and can be changed with `--wait`, for example
+`snapshot-run 4 --wait 300`.
+
 For a legal modal whose content appears only after interaction, open the modal
 yourself in the tab originally opened by Giveaway Agent. Click the extension
 icon and choose **Capture current tab**. The extension reads the now-visible DOM
