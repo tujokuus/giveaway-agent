@@ -71,6 +71,19 @@ Inspect the entry pages for one competition with a headless Chromium browser:
 python main.py inspect 1
 ```
 
+The `inspect` command first downloads each regular web page with HTTPX and
+parses its HTML with Beautiful Soup. If the static response contains a usable
+form and enough page text, that result is saved immediately. Otherwise the
+command falls back to Playwright so JavaScript can run. Every result stores and
+prints its loading method as `httpx_beautifulsoup`, `playwright_fallback`, or
+`none` for deliberately skipped social URLs.
+
+The form classifier ignores site search fields and navigation controls and
+requires multiple personal-data signals before accepting a competition form.
+Static pages may follow one explicit participation link. Playwright fallback
+also stores observed XHR/fetch and iframe URLs. Unresolved, blocked, empty, and
+social results are marked as requiring manual review.
+
 The inspector reads visible page text, form fields, required-field markers, and
 links that appear to lead to privacy notices, rules, or terms. It saves the
 structured result in SQLite. It never fills or submits a form. Instagram,

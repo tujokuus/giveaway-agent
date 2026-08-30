@@ -45,11 +45,15 @@ CREATE TABLE IF NOT EXISTS page_inspections (
     final_url TEXT,
     page_title TEXT,
     status TEXT NOT NULL,
+    inspection_method TEXT NOT NULL DEFAULT 'unknown',
+    manual_review_required INTEGER NOT NULL DEFAULT 0,
     page_text TEXT NOT NULL DEFAULT '',
     ai_snapshot TEXT NOT NULL DEFAULT '',
     fields_json TEXT NOT NULL DEFAULT '[]',
     privacy_urls_json TEXT NOT NULL DEFAULT '[]',
     rules_urls_json TEXT NOT NULL DEFAULT '[]',
+    network_urls_json TEXT NOT NULL DEFAULT '[]',
+    iframe_urls_json TEXT NOT NULL DEFAULT '[]',
     error_message TEXT,
     inspected_at TEXT NOT NULL,
     FOREIGN KEY (competition_id) REFERENCES competitions (id) ON DELETE CASCADE,
@@ -126,11 +130,15 @@ class StoredPageInspection:
     final_url: str | None
     title: str | None
     status: str
+    inspection_method: str
+    manual_review_required: bool
     page_text: str
     ai_snapshot: str
     fields: tuple[FormField, ...]
     privacy_urls: tuple[str, ...]
     rules_urls: tuple[str, ...]
+    network_urls: tuple[str, ...]
+    iframe_urls: tuple[str, ...]
     error_message: str | None
     inspected_at: str
 
@@ -163,7 +171,22 @@ def initialize_database(connection: sqlite3.Connection) -> None:
                 "ALTER TABLE page_inspections "
                 "ADD COLUMN ai_snapshot TEXT NOT NULL DEFAULT ''"
             )
-        connection.execute("PRAGMA user_version = 3")
+        if "inspection_method" not in columns:
+            connection.execute(
+                "ALTER TABLE page_inspections "
+                "ADD COLUMN inspection_method TEXT NOT NULL DEFAULT 'unknown'"
+            )
+        migrations = {
+            "manual_review_required": "INTEGER NOT NULL DEFAULT 0",
+            "network_urls_json": "TEXT NOT NULL DEFAULT '[]'",
+            "iframe_urls_json": "TEXT NOT NULL DEFAULT '[]'",
+        }
+        for column, definition in migrations.items():
+            if column not in columns:
+                connection.execute(
+                    f"ALTER TABLE page_inspections ADD COLUMN {column} {definition}"
+                )
+        connection.execute("PRAGMA user_version = 5")
 
 
 def save_page_inspections(
@@ -182,19 +205,24 @@ def save_page_inspections(
                 """
                 INSERT INTO page_inspections (
                     competition_id, requested_url, final_url, page_title, status,
-                    page_text, ai_snapshot, fields_json, privacy_urls_json,
-                    rules_urls_json, error_message, inspected_at
+                    inspection_method, manual_review_required, page_text,
+                    ai_snapshot, fields_json, privacy_urls_json, rules_urls_json,
+                    network_urls_json, iframe_urls_json, error_message, inspected_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(competition_id, requested_url) DO UPDATE SET
                     final_url = excluded.final_url,
                     page_title = excluded.page_title,
                     status = excluded.status,
+                    inspection_method = excluded.inspection_method,
+                    manual_review_required = excluded.manual_review_required,
                     page_text = excluded.page_text,
                     ai_snapshot = excluded.ai_snapshot,
                     fields_json = excluded.fields_json,
                     privacy_urls_json = excluded.privacy_urls_json,
                     rules_urls_json = excluded.rules_urls_json,
+                    network_urls_json = excluded.network_urls_json,
+                    iframe_urls_json = excluded.iframe_urls_json,
                     error_message = excluded.error_message,
                     inspected_at = excluded.inspected_at
                 """,
@@ -204,11 +232,15 @@ def save_page_inspections(
                     inspection.final_url,
                     inspection.title,
                     inspection.status,
+                    inspection.inspection_method,
+                    int(inspection.manual_review_required),
                     inspection.page_text,
                     inspection.ai_snapshot,
                     json.dumps([asdict(field) for field in inspection.fields], ensure_ascii=False),
                     _to_json(inspection.privacy_urls),
                     _to_json(inspection.rules_urls),
+                    _to_json(inspection.network_urls),
+                    _to_json(inspection.iframe_urls),
                     inspection.error_message,
                     timestamp,
                 ),
@@ -367,11 +399,15 @@ def _row_to_page_inspection(row: sqlite3.Row) -> StoredPageInspection:
         final_url=row["final_url"],
         title=row["page_title"],
         status=row["status"],
+        inspection_method=row["inspection_method"],
+        manual_review_required=bool(row["manual_review_required"]),
         page_text=row["page_text"],
         ai_snapshot=row["ai_snapshot"],
         fields=tuple(FormField(**item) for item in json.loads(row["fields_json"])),
         privacy_urls=tuple(json.loads(row["privacy_urls_json"])),
         rules_urls=tuple(json.loads(row["rules_urls_json"])),
+        network_urls=tuple(json.loads(row["network_urls_json"])),
+        iframe_urls=tuple(json.loads(row["iframe_urls_json"])),
         error_message=row["error_message"],
         inspected_at=row["inspected_at"],
     )

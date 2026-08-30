@@ -227,7 +227,15 @@ def _show_stored_competition(database_path: Path, competition_id: int) -> int:
         print("Inspections:")
         for inspection in inspections:
             print(f"  - {inspection.status}: {inspection.requested_url}")
+            print(
+                f"    Loading method: "
+                f"{_display_inspection_method(inspection.inspection_method)}"
+            )
             print(f"    AI snapshot: {len(inspection.ai_snapshot)} characters")
+            print(
+                f"    Manual review required: "
+                f"{'yes' if inspection.manual_review_required else 'no'}"
+            )
             for privacy_url in inspection.privacy_urls:
                 print(f"    Privacy: {privacy_url}")
             for rules_url in inspection.rules_urls:
@@ -288,6 +296,10 @@ def _print_page_inspection(inspection: PageInspection) -> None:
 
     print()
     print(f"Status: {inspection.status}")
+    print(
+        f"Loading method: "
+        f"{_display_inspection_method(inspection.inspection_method)}"
+    )
     print(f"URL: {inspection.requested_url}")
     if inspection.final_url and inspection.final_url != inspection.requested_url:
         print(f"Final URL: {inspection.final_url}")
@@ -296,6 +308,10 @@ def _print_page_inspection(inspection: PageInspection) -> None:
     if inspection.error_message:
         print(f"Note: {inspection.error_message}")
     print(f"AI snapshot: {len(inspection.ai_snapshot)} characters")
+    print(
+        "Manual review required: "
+        f"{'yes' if inspection.manual_review_required else 'no'}"
+    )
     print(f"Form fields: {len(inspection.fields)}")
     for field in inspection.fields:
         required = "required" if field.required else "optional"
@@ -305,6 +321,10 @@ def _print_page_inspection(inspection: PageInspection) -> None:
     _print_urls(inspection.privacy_urls)
     print("Rules or terms links:")
     _print_urls(inspection.rules_urls)
+    print("XHR or fetch URLs:")
+    _print_urls(inspection.network_urls)
+    print("Iframe URLs:")
+    _print_urls(inspection.iframe_urls)
 
 
 def _print_urls(urls: tuple[str, ...]) -> None:
@@ -313,6 +333,21 @@ def _print_urls(urls: tuple[str, ...]) -> None:
             print(f"  - {url}")
     else:
         print("  -")
+
+
+def _display_inspection_method(method: str) -> str:
+    """Return a readable description of the page-loading path."""
+
+    descriptions = {
+        "httpx_beautifulsoup": "HTTPX + Beautiful Soup",
+        "httpx_beautifulsoup_followed_link": (
+            "HTTPX + Beautiful Soup -> followed participation link"
+        ),
+        "playwright_fallback": "HTTPX + Beautiful Soup -> Playwright fallback",
+        "none": "Not loaded",
+        "unknown": "Unknown",
+    }
+    return descriptions.get(method, method)
 
 
 def _print_stored_competition(competition: StoredCompetition) -> None:

@@ -54,7 +54,7 @@ def test_initialize_database_creates_competitions_table(database) -> None:
     ).fetchone()
 
     assert table["name"] == "competitions"
-    assert database.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert database.execute("PRAGMA user_version").fetchone()[0] == 5
 
 
 def test_save_page_inspection_preserves_fields_and_relevant_links(database) -> None:
@@ -79,6 +79,9 @@ def test_save_page_inspection_preserves_fields_and_relevant_links(database) -> N
         privacy_urls=("https://example.test/privacy",),
         rules_urls=("https://example.test/rules",),
         ai_snapshot='- textbox "Puhelinnumero" [ref=e1]',
+        inspection_method="httpx_beautifulsoup",
+        network_urls=("https://example.test/api/form",),
+        iframe_urls=("https://forms.example.test/embed",),
     )
 
     save_page_inspections(database, 1, [inspection])
@@ -90,6 +93,9 @@ def test_save_page_inspection_preserves_fields_and_relevant_links(database) -> N
     assert stored[0].privacy_urls == ("https://example.test/privacy",)
     assert stored[0].rules_urls == ("https://example.test/rules",)
     assert stored[0].ai_snapshot == '- textbox "Puhelinnumero" [ref=e1]'
+    assert stored[0].inspection_method == "httpx_beautifulsoup"
+    assert stored[0].network_urls == ("https://example.test/api/form",)
+    assert stored[0].iframe_urls == ("https://forms.example.test/embed",)
 
 
 def test_initialize_database_migrates_existing_inspection_table() -> None:
@@ -110,7 +116,11 @@ def test_initialize_database_migrates_existing_inspection_table() -> None:
     }
 
     assert "ai_snapshot" in columns
-    assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert "inspection_method" in columns
+    assert "manual_review_required" in columns
+    assert "network_urls_json" in columns
+    assert "iframe_urls_json" in columns
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 5
     connection.close()
 
 
