@@ -1,5 +1,7 @@
 """Tests for the command-line interface."""
 
+import sqlite3
+
 import httpx
 
 import main as cli
@@ -28,7 +30,10 @@ def test_fetch_command_prints_response_summary(monkeypatch, capsys) -> None:
     assert output.err == ""
 
 
-def test_discover_command_prints_competition_metadata(monkeypatch, capsys) -> None:
+def test_discover_command_saves_and_prints_competition_metadata(
+    monkeypatch,
+    capsys,
+) -> None:
     html = """
         <article class="post">
           <h2 class="entry-title">
@@ -52,11 +57,14 @@ def test_discover_command_prints_competition_metadata(monkeypatch, capsys) -> No
 
     monkeypatch.setattr(cli, "fetch_page", fake_fetch_page)
 
-    exit_code = cli.main(["discover"])
+    exit_code = cli.main(["discover", "--database", ":memory:"])
 
     output = capsys.readouterr()
     assert exit_code == 0
     assert "Found 1 competition(s) from kilpailumaailma.com." in output.out
+    assert "New: 1" in output.out
+    assert "Updated: 0" in output.out
+    assert "Database: :memory:" in output.out
     assert "1. Voita palkinto" in output.out
     assert "Platforms: Instagram" in output.out
     assert "Organizer: Test Oy" in output.out
@@ -77,6 +85,28 @@ def test_command_reports_network_error(monkeypatch, capsys) -> None:
     output = capsys.readouterr()
     assert exit_code == 1
     assert "Request failed: Connection refused" in output.err
+
+
+def test_discover_command_reports_database_error(monkeypatch, capsys) -> None:
+    def fake_fetch_page(url: str, *, timeout: float) -> FetchedPage:
+        return FetchedPage(
+            requested_url=url,
+            final_url="https://www.kilpailumaailma.com/",
+            status_code=200,
+            html="<html></html>",
+        )
+
+    def fail_to_connect(database_path):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(cli, "fetch_page", fake_fetch_page)
+    monkeypatch.setattr(cli, "connect_database", fail_to_connect)
+
+    exit_code = cli.main(["discover"])
+
+    output = capsys.readouterr()
+    assert exit_code == 1
+    assert "Database save failed: database is locked" in output.err
 
 
 def test_command_rejects_non_positive_timeout(capsys) -> None:

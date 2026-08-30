@@ -33,7 +33,7 @@ def test_discover_extracts_listing_metadata() -> None:
     )
 
 
-def test_discover_removes_duplicates_and_ignores_external_articles() -> None:
+def test_discover_ignores_duplicates_external_articles_and_promotions() -> None:
     html = FIXTURE_PATH.read_text(encoding="utf-8")
 
     candidates = SOURCE.discover(html, page_url=SOURCE.default_url)
