@@ -13,6 +13,14 @@ SOCIAL_HOSTS = (
 PRIVACY_KEYWORDS = ("privacy", "tietosuoja", "rekisteriseloste")
 RULES_KEYWORDS = ("rules", "terms", "conditions", "säännöt", "saannot", "ehdot")
 MAX_PAGE_TEXT_LENGTH = 50_000
+CLOUDFLARE_MARKERS = (
+    "just a moment",
+    "attention required! | cloudflare",
+    "checking your browser",
+    "performing security verification",
+    "verify you are human",
+    "cf-chl-",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +70,7 @@ def inspect_pages(
 
     # Import lazily so other commands still work before Playwright is installed.
     from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
 
     try:
@@ -76,6 +85,7 @@ def inspect_pages(
                             url,
                             timeout_ms=timeout_seconds * 1000,
                             playwright_error=PlaywrightError,
+                            timeout_error=PlaywrightTimeoutError,
                         )
                     )
             finally:
@@ -83,7 +93,12 @@ def inspect_pages(
                 browser.close()
     except PlaywrightError as error:
         message = str(error).splitlines()[0]
-        results.extend(_failed_result(url, message) for url in browser_urls)
+        status = (
+            "browser_not_installed"
+            if "executable doesn't exist" in message.lower()
+            else "failed"
+        )
+        results.extend(_failed_result(url, message, status=status) for url in browser_urls)
 
     return _order_results(urls, results)
 
@@ -116,7 +131,38 @@ def classify_relevant_links(
     return _deduplicate(privacy_urls), _deduplicate(rules_urls)
 
 
-def _inspect_page(context, url: str, *, timeout_ms: float, playwright_error) -> PageInspection:
+def classify_inspection_status(
+    *,
+    http_status: int | None,
+    title: str | None,
+    page_text: str,
+    field_count: int,
+) -> tuple[str, str | None]:
+    """Classify a loaded page without claiming every access denial is Cloudflare."""
+
+    searchable = f"{title or ''} {page_text}".lower()
+    if any(marker in searchable for marker in CLOUDFLARE_MARKERS):
+        note = "Cloudflare challenge page detected"
+        if http_status is not None:
+            note = f"{note} (HTTP {http_status})"
+        return "blocked_by_cloudflare", note
+    if http_status in {401, 403, 429}:
+        return "blocked_access", f"HTTP {http_status}"
+    if http_status is not None and http_status >= 400:
+        return "http_error", f"HTTP {http_status}"
+    if field_count:
+        return "completed_with_form", None
+    return "completed_no_form", None
+
+
+def _inspect_page(
+    context,
+    url: str,
+    *,
+    timeout_ms: float,
+    playwright_error,
+    timeout_error,
+) -> PageInspection:
     """Inspect one page and every same- or cross-origin frame Playwright can read."""
 
     page = context.new_page()
@@ -147,12 +193,18 @@ def _inspect_page(context, url: str, *, timeout_ms: float, playwright_error) -> 
 
         privacy_urls, rules_urls = classify_relevant_links(links)
         page_text = page.locator("body").inner_text(timeout=timeout_ms)
-        status = "completed" if response is None or response.ok else "http_error"
-        error_message = None if response is None or response.ok else f"HTTP {response.status}"
+        http_status = response.status if response is not None else None
+        title = page.title() or None
+        status, error_message = classify_inspection_status(
+            http_status=http_status,
+            title=title,
+            page_text=page_text,
+            field_count=len(fields),
+        )
         return PageInspection(
             requested_url=url,
             final_url=page.url,
-            title=page.title() or None,
+            title=title,
             status=status,
             page_text=page_text[:MAX_PAGE_TEXT_LENGTH],
             fields=tuple(fields),
@@ -160,8 +212,10 @@ def _inspect_page(context, url: str, *, timeout_ms: float, playwright_error) -> 
             rules_urls=rules_urls,
             error_message=error_message,
         )
+    except timeout_error as error:
+        return _failed_result(url, str(error).splitlines()[0], status="timeout")
     except playwright_error as error:
-        return _failed_result(url, str(error).splitlines()[0])
+        return _failed_result(url, str(error).splitlines()[0], status="failed")
     finally:
         page.close()
 
@@ -180,12 +234,12 @@ def _social_result(url: str) -> PageInspection:
     )
 
 
-def _failed_result(url: str, message: str) -> PageInspection:
+def _failed_result(url: str, message: str, *, status: str) -> PageInspection:
     return PageInspection(
         requested_url=url,
         final_url=None,
         title=None,
-        status="failed",
+        status=status,
         page_text="",
         fields=(),
         privacy_urls=(),

@@ -77,6 +77,18 @@ structured result in SQLite. It never fills or submits a form. Instagram,
 Facebook, and TikTok URLs are recorded as `skipped_social` in MVP 1 instead of
 being opened or automated.
 
+Inspection statuses distinguish successful pages from access and setup errors:
+
+- `completed_with_form`: the page loaded and editable form fields were found
+- `completed_no_form`: the page loaded but no editable form was found
+- `blocked_by_cloudflare`: a Cloudflare challenge page was detected
+- `blocked_access`: the server returned HTTP 401, 403, or 429 without clear Cloudflare markers
+- `http_error`: another HTTP error was returned
+- `timeout`: the page did not load before the configured timeout
+- `browser_not_installed`: the required Playwright browser executable is missing
+- `failed`: another browser error occurred
+- `skipped_social`: social-platform inspection was deliberately skipped
+
 ## Local database
 
 The SQLite persistence layer stores competition metadata in:
