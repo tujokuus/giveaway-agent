@@ -3,12 +3,13 @@
 import json
 import sqlite3
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
 from app.discovery import CompetitionCandidate
+from app.page_inspection import FormField, PageInspection
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -36,6 +37,26 @@ ON competitions (source);
 
 CREATE INDEX IF NOT EXISTS idx_competitions_last_seen_at
 ON competitions (last_seen_at);
+
+CREATE TABLE IF NOT EXISTS page_inspections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    competition_id INTEGER NOT NULL,
+    requested_url TEXT NOT NULL,
+    final_url TEXT,
+    page_title TEXT,
+    status TEXT NOT NULL,
+    page_text TEXT NOT NULL DEFAULT '',
+    fields_json TEXT NOT NULL DEFAULT '[]',
+    privacy_urls_json TEXT NOT NULL DEFAULT '[]',
+    rules_urls_json TEXT NOT NULL DEFAULT '[]',
+    error_message TEXT,
+    inspected_at TEXT NOT NULL,
+    FOREIGN KEY (competition_id) REFERENCES competitions (id) ON DELETE CASCADE,
+    UNIQUE (competition_id, requested_url)
+);
+
+CREATE INDEX IF NOT EXISTS idx_page_inspections_competition_id
+ON page_inspections (competition_id);
 """
 
 UPSERT_SQL = """
@@ -95,6 +116,23 @@ class StoredCompetition:
     last_seen_at: str
 
 
+@dataclass(frozen=True, slots=True)
+class StoredPageInspection:
+    """A previously saved browser inspection."""
+
+    competition_id: int
+    requested_url: str
+    final_url: str | None
+    title: str | None
+    status: str
+    page_text: str
+    fields: tuple[FormField, ...]
+    privacy_urls: tuple[str, ...]
+    rules_urls: tuple[str, ...]
+    error_message: str | None
+    inspected_at: str
+
+
 def connect_database(
     database_path: str | Path = DEFAULT_DATABASE_PATH,
 ) -> sqlite3.Connection:
@@ -114,7 +152,71 @@ def initialize_database(connection: sqlite3.Connection) -> None:
 
     with connection:
         connection.executescript(SCHEMA_SQL)
-        connection.execute("PRAGMA user_version = 1")
+        connection.execute("PRAGMA user_version = 2")
+
+
+def save_page_inspections(
+    connection: sqlite3.Connection,
+    competition_id: int,
+    inspections: Iterable[PageInspection],
+    *,
+    inspected_at: datetime | None = None,
+) -> None:
+    """Insert or replace the latest inspection for each entry URL."""
+
+    timestamp = _timestamp(inspected_at)
+    with connection:
+        for inspection in inspections:
+            connection.execute(
+                """
+                INSERT INTO page_inspections (
+                    competition_id, requested_url, final_url, page_title, status,
+                    page_text, fields_json, privacy_urls_json, rules_urls_json,
+                    error_message, inspected_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(competition_id, requested_url) DO UPDATE SET
+                    final_url = excluded.final_url,
+                    page_title = excluded.page_title,
+                    status = excluded.status,
+                    page_text = excluded.page_text,
+                    fields_json = excluded.fields_json,
+                    privacy_urls_json = excluded.privacy_urls_json,
+                    rules_urls_json = excluded.rules_urls_json,
+                    error_message = excluded.error_message,
+                    inspected_at = excluded.inspected_at
+                """,
+                (
+                    competition_id,
+                    inspection.requested_url,
+                    inspection.final_url,
+                    inspection.title,
+                    inspection.status,
+                    inspection.page_text,
+                    json.dumps([asdict(field) for field in inspection.fields], ensure_ascii=False),
+                    _to_json(inspection.privacy_urls),
+                    _to_json(inspection.rules_urls),
+                    inspection.error_message,
+                    timestamp,
+                ),
+            )
+
+
+def list_page_inspections(
+    connection: sqlite3.Connection,
+    competition_id: int,
+) -> list[StoredPageInspection]:
+    """Return saved page inspections for one competition."""
+
+    rows = connection.execute(
+        """
+        SELECT * FROM page_inspections
+        WHERE competition_id = ?
+        ORDER BY id
+        """,
+        (competition_id,),
+    ).fetchall()
+    return [_row_to_page_inspection(row) for row in rows]
 
 
 def save_competitions(
@@ -242,3 +344,20 @@ def _row_to_competition(row: sqlite3.Row) -> StoredCompetition:
         last_seen_at=row["last_seen_at"],
     )
 
+
+def _row_to_page_inspection(row: sqlite3.Row) -> StoredPageInspection:
+    """Convert one inspection row into the public stored model."""
+
+    return StoredPageInspection(
+        competition_id=row["competition_id"],
+        requested_url=row["requested_url"],
+        final_url=row["final_url"],
+        title=row["page_title"],
+        status=row["status"],
+        page_text=row["page_text"],
+        fields=tuple(FormField(**item) for item in json.loads(row["fields_json"])),
+        privacy_urls=tuple(json.loads(row["privacy_urls_json"])),
+        rules_urls=tuple(json.loads(row["rules_urls_json"])),
+        error_message=row["error_message"],
+        inspected_at=row["inspected_at"],
+    )
