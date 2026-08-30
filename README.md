@@ -42,11 +42,27 @@ For each card, the command prints all metadata available on the listing page:
 - prize
 - direct participation links
 
-The application does not yet download individual detail pages or save results.
+The application does not yet download individual detail pages. Discovered listing data is saved to the local SQLite database.
+
+## Local database
+
+The SQLite persistence layer stores competition metadata in:
+
+```text
+data/giveaway_agent.sqlite3
+```
+
+The database file is local and excluded from Git. The `discover` command initializes the schema automatically, inserts new competitions, updates previously seen competitions, and reports both counts.
+
+To use a different database file for one run:
+
+```powershell
+python main.py discover --database data/another.sqlite3
+```
 
 ## Source adapters
 
-Shared downloading, command-line handling, models, and future database storage are independent of any one website. Each supported website implements the small `CompetitionSource` interface in its own adapter under `app/sources/`.
+Shared downloading, command-line handling, models, and database storage are independent of any one website. Each supported website implements the small `CompetitionSource` interface in its own adapter under `app/sources/`.
 
 ## Download a page
 
