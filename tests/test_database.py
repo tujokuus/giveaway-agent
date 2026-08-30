@@ -54,7 +54,7 @@ def test_initialize_database_creates_competitions_table(database) -> None:
     ).fetchone()
 
     assert table["name"] == "competitions"
-    assert database.execute("PRAGMA user_version").fetchone()[0] == 2
+    assert database.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_save_page_inspection_preserves_fields_and_relevant_links(database) -> None:
@@ -78,6 +78,7 @@ def test_save_page_inspection_preserves_fields_and_relevant_links(database) -> N
         ),
         privacy_urls=("https://example.test/privacy",),
         rules_urls=("https://example.test/rules",),
+        ai_snapshot='- textbox "Puhelinnumero" [ref=e1]',
     )
 
     save_page_inspections(database, 1, [inspection])
@@ -88,6 +89,29 @@ def test_save_page_inspection_preserves_fields_and_relevant_links(database) -> N
     assert stored[0].fields[0].required is True
     assert stored[0].privacy_urls == ("https://example.test/privacy",)
     assert stored[0].rules_urls == ("https://example.test/rules",)
+    assert stored[0].ai_snapshot == '- textbox "Puhelinnumero" [ref=e1]'
+
+
+def test_initialize_database_migrates_existing_inspection_table() -> None:
+    connection = connect_database(":memory:")
+    connection.execute(
+        """
+        CREATE TABLE page_inspections (
+            id INTEGER PRIMARY KEY,
+            competition_id INTEGER NOT NULL,
+            requested_url TEXT NOT NULL
+        )
+        """
+    )
+
+    initialize_database(connection)
+    columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(page_inspections)")
+    }
+
+    assert "ai_snapshot" in columns
+    assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+    connection.close()
 
 
 def test_save_and_get_competition_preserves_metadata(database) -> None:

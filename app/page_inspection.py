@@ -13,6 +13,7 @@ SOCIAL_HOSTS = (
 PRIVACY_KEYWORDS = ("privacy", "tietosuoja", "rekisteriseloste")
 RULES_KEYWORDS = ("rules", "terms", "conditions", "säännöt", "saannot", "ehdot")
 MAX_PAGE_TEXT_LENGTH = 50_000
+MAX_AI_SNAPSHOT_LENGTH = 100_000
 CLOUDFLARE_MARKERS = (
     "just a moment",
     "attention required! | cloudflare",
@@ -48,6 +49,7 @@ class PageInspection:
     fields: tuple[FormField, ...]
     privacy_urls: tuple[str, ...]
     rules_urls: tuple[str, ...]
+    ai_snapshot: str = ""
     error_message: str | None = None
 
 
@@ -193,6 +195,11 @@ def _inspect_page(
 
         privacy_urls, rules_urls = classify_relevant_links(links)
         page_text = page.locator("body").inner_text(timeout=timeout_ms)
+        try:
+            ai_snapshot = page.aria_snapshot(mode="ai", timeout=timeout_ms)
+        except playwright_error:
+            # The other inspection data remains useful if snapshot capture fails.
+            ai_snapshot = ""
         http_status = response.status if response is not None else None
         title = page.title() or None
         status, error_message = classify_inspection_status(
@@ -210,6 +217,7 @@ def _inspect_page(
             fields=tuple(fields),
             privacy_urls=privacy_urls,
             rules_urls=rules_urls,
+            ai_snapshot=ai_snapshot[:MAX_AI_SNAPSHOT_LENGTH],
             error_message=error_message,
         )
     except timeout_error as error:

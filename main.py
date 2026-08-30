@@ -227,6 +227,7 @@ def _show_stored_competition(database_path: Path, competition_id: int) -> int:
         print("Inspections:")
         for inspection in inspections:
             print(f"  - {inspection.status}: {inspection.requested_url}")
+            print(f"    AI snapshot: {len(inspection.ai_snapshot)} characters")
             for privacy_url in inspection.privacy_urls:
                 print(f"    Privacy: {privacy_url}")
             for rules_url in inspection.rules_urls:
@@ -294,6 +295,7 @@ def _print_page_inspection(inspection: PageInspection) -> None:
         print(f"Title: {inspection.title}")
     if inspection.error_message:
         print(f"Note: {inspection.error_message}")
+    print(f"AI snapshot: {len(inspection.ai_snapshot)} characters")
     print(f"Form fields: {len(inspection.fields)}")
     for field in inspection.fields:
         required = "required" if field.required else "optional"

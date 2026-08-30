@@ -77,6 +77,12 @@ structured result in SQLite. It never fills or submits a form. Instagram,
 Facebook, and TikTok URLs are recorded as `skipped_social` in MVP 1 instead of
 being opened or automated.
 
+For every page that Playwright can open, the inspector also captures an
+AI-optimized ARIA snapshot. The YAML-like snapshot preserves headings, links,
+buttons, form controls, accessible names, element references, and iframe
+structure in a format suitable for later LLM analysis. It is stored locally in
+SQLite and capped at 100,000 characters per inspected URL.
+
 Inspection statuses distinguish successful pages from access and setup errors:
 
 - `completed_with_form`: the page loaded and editable form fields were found

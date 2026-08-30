@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS page_inspections (
     page_title TEXT,
     status TEXT NOT NULL,
     page_text TEXT NOT NULL DEFAULT '',
+    ai_snapshot TEXT NOT NULL DEFAULT '',
     fields_json TEXT NOT NULL DEFAULT '[]',
     privacy_urls_json TEXT NOT NULL DEFAULT '[]',
     rules_urls_json TEXT NOT NULL DEFAULT '[]',
@@ -126,6 +127,7 @@ class StoredPageInspection:
     title: str | None
     status: str
     page_text: str
+    ai_snapshot: str
     fields: tuple[FormField, ...]
     privacy_urls: tuple[str, ...]
     rules_urls: tuple[str, ...]
@@ -152,7 +154,16 @@ def initialize_database(connection: sqlite3.Connection) -> None:
 
     with connection:
         connection.executescript(SCHEMA_SQL)
-        connection.execute("PRAGMA user_version = 2")
+        columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(page_inspections)")
+        }
+        if "ai_snapshot" not in columns:
+            connection.execute(
+                "ALTER TABLE page_inspections "
+                "ADD COLUMN ai_snapshot TEXT NOT NULL DEFAULT ''"
+            )
+        connection.execute("PRAGMA user_version = 3")
 
 
 def save_page_inspections(
@@ -171,15 +182,16 @@ def save_page_inspections(
                 """
                 INSERT INTO page_inspections (
                     competition_id, requested_url, final_url, page_title, status,
-                    page_text, fields_json, privacy_urls_json, rules_urls_json,
-                    error_message, inspected_at
+                    page_text, ai_snapshot, fields_json, privacy_urls_json,
+                    rules_urls_json, error_message, inspected_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(competition_id, requested_url) DO UPDATE SET
                     final_url = excluded.final_url,
                     page_title = excluded.page_title,
                     status = excluded.status,
                     page_text = excluded.page_text,
+                    ai_snapshot = excluded.ai_snapshot,
                     fields_json = excluded.fields_json,
                     privacy_urls_json = excluded.privacy_urls_json,
                     rules_urls_json = excluded.rules_urls_json,
@@ -193,6 +205,7 @@ def save_page_inspections(
                     inspection.title,
                     inspection.status,
                     inspection.page_text,
+                    inspection.ai_snapshot,
                     json.dumps([asdict(field) for field in inspection.fields], ensure_ascii=False),
                     _to_json(inspection.privacy_urls),
                     _to_json(inspection.rules_urls),
@@ -355,6 +368,7 @@ def _row_to_page_inspection(row: sqlite3.Row) -> StoredPageInspection:
         title=row["page_title"],
         status=row["status"],
         page_text=row["page_text"],
+        ai_snapshot=row["ai_snapshot"],
         fields=tuple(FormField(**item) for item in json.loads(row["fields_json"])),
         privacy_urls=tuple(json.loads(row["privacy_urls_json"])),
         rules_urls=tuple(json.loads(row["rules_urls_json"])),
