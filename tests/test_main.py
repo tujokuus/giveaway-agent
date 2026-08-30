@@ -1,11 +1,39 @@
 """Tests for the command-line interface."""
 
 import sqlite3
+from datetime import UTC, datetime
 
 import httpx
 
 import main as cli
+from app.database import connect_database, initialize_database, save_competitions
+from app.discovery import CompetitionCandidate
 from app.fetching import FetchedPage
+
+
+def make_candidate() -> CompetitionCandidate:
+    return CompetitionCandidate(
+        url="https://www.kilpailumaailma.com/voita-palkinto/",
+        source="kilpailumaailma.com",
+        title="Voita palkinto",
+        published_date="30.8.2026",
+        platforms=("Facebook", "Instagram"),
+        organizer="Test Oy",
+        deadline="1.9.2026",
+        prize="Testipalkinto",
+        entry_urls=("https://instagram.com/example",),
+    )
+
+
+def make_stored_database():
+    connection = connect_database(":memory:")
+    initialize_database(connection)
+    save_competitions(
+        connection,
+        [make_candidate()],
+        observed_at=datetime(2026, 8, 30, 10, tzinfo=UTC),
+    )
+    return connection
 
 
 def test_fetch_command_prints_response_summary(monkeypatch, capsys) -> None:
@@ -73,6 +101,49 @@ def test_discover_command_saves_and_prints_competition_metadata(
     assert "Entry URL: https://instagram.com/example" in output.out
 
 
+def test_list_command_prints_stored_competitions(monkeypatch, capsys) -> None:
+    connection = make_stored_database()
+    monkeypatch.setattr(cli, "connect_database", lambda path: connection)
+
+    exit_code = cli.main(["list", "--database", ":memory:"])
+
+    output = capsys.readouterr()
+    assert exit_code == 0
+    assert "Stored competitions: 1" in output.out
+    assert "Deadline" in output.out
+    assert "Facebook, Instagram" in output.out
+    assert "Voita palkinto" in output.out
+
+
+def test_show_command_prints_all_stored_fields(monkeypatch, capsys) -> None:
+    connection = make_stored_database()
+    monkeypatch.setattr(cli, "connect_database", lambda path: connection)
+
+    exit_code = cli.main(["show", "1", "--database", ":memory:"])
+
+    output = capsys.readouterr()
+    assert exit_code == 0
+    assert "ID: 1" in output.out
+    assert "Title: Voita palkinto" in output.out
+    assert "Platforms: Facebook, Instagram" in output.out
+    assert "Organizer: Test Oy" in output.out
+    assert "Prize: Testipalkinto" in output.out
+    assert "Discovered at: 2026-08-30T10:00:00+00:00" in output.out
+    assert "  - https://instagram.com/example" in output.out
+
+
+def test_show_command_reports_unknown_id(monkeypatch, capsys) -> None:
+    connection = connect_database(":memory:")
+    initialize_database(connection)
+    monkeypatch.setattr(cli, "connect_database", lambda path: connection)
+
+    exit_code = cli.main(["show", "999", "--database", ":memory:"])
+
+    output = capsys.readouterr()
+    assert exit_code == 1
+    assert "Competition with ID 999 was not found." in output.err
+
+
 def test_command_reports_network_error(monkeypatch, capsys) -> None:
     def fake_fetch_page(url: str, *, timeout: float) -> FetchedPage:
         request = httpx.Request("GET", url)
@@ -115,4 +186,3 @@ def test_command_rejects_non_positive_timeout(capsys) -> None:
     output = capsys.readouterr()
     assert exit_code == 2
     assert "timeout must be greater than zero" in output.err
-

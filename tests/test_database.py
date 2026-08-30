@@ -11,10 +11,13 @@ from app.database import (
     get_competition,
     initialize_database,
     list_competitions,
+    list_page_inspections,
     normalize_url,
     save_competitions,
+    save_page_inspections,
 )
 from app.discovery import CompetitionCandidate
+from app.page_inspection import FormField, PageInspection
 
 
 @pytest.fixture
@@ -51,7 +54,40 @@ def test_initialize_database_creates_competitions_table(database) -> None:
     ).fetchone()
 
     assert table["name"] == "competitions"
-    assert database.execute("PRAGMA user_version").fetchone()[0] == 1
+    assert database.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_save_page_inspection_preserves_fields_and_relevant_links(database) -> None:
+    save_competitions(database, [make_candidate()])
+    inspection = PageInspection(
+        requested_url="https://example.test/enter",
+        final_url="https://example.test/form",
+        title="Competition form",
+        status="completed",
+        page_text="Phone numbers are used to contact the winner.",
+        fields=(
+            FormField(
+                name="phone",
+                field_type="tel",
+                label="Puhelinnumero",
+                required=True,
+                placeholder=None,
+                autocomplete="tel",
+                frame_url="https://example.test/form",
+            ),
+        ),
+        privacy_urls=("https://example.test/privacy",),
+        rules_urls=("https://example.test/rules",),
+    )
+
+    save_page_inspections(database, 1, [inspection])
+    stored = list_page_inspections(database, 1)
+
+    assert len(stored) == 1
+    assert stored[0].fields[0].field_type == "tel"
+    assert stored[0].fields[0].required is True
+    assert stored[0].privacy_urls == ("https://example.test/privacy",)
+    assert stored[0].rules_urls == ("https://example.test/rules",)
 
 
 def test_save_and_get_competition_preserves_metadata(database) -> None:
