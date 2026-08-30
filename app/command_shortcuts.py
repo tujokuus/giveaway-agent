@@ -49,5 +49,47 @@ def extension_inspect() -> int:
     return _run("extension-inspect")
 
 
+def server() -> int:
+    """Start the localhost snapshot server."""
+
+    return _run("snapshot-serve")
+
+
+def read_page() -> int:
+    """Queue a competition for the Chrome Extension."""
+
+    return _run("extension-inspect")
+
+
+def snapshots() -> int:
+    """List Chrome Extension snapshot tasks."""
+
+    return _run("snapshots")
+
+
+def snapshot_show() -> int:
+    """Show one stored Chrome Extension snapshot."""
+
+    return _run("snapshot-show")
+
+
+def snapshot_check() -> int:
+    """Show a deterministic quality report for one snapshot."""
+
+    return _run("snapshot-check")
+
+
+def snapshot_prepare() -> int:
+    """Build and store an LLM-ready snapshot package."""
+
+    return _run("snapshot-prepare")
+
+
+def prepared_show() -> int:
+    """Show a stored LLM-ready snapshot package."""
+
+    return _run("prepared-show")
+
+
 def show_help() -> int:
     return _run("help")

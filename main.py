@@ -1,6 +1,7 @@
 """Command-line entry point for Giveaway Agent."""
 
 import argparse
+import json
 import sqlite3
 import sys
 from collections.abc import Sequence
@@ -24,7 +25,13 @@ from app.discovery import CompetitionCandidate
 from app.fetching import DEFAULT_TIMEOUT_SECONDS, FetchedPage, fetch_page
 from app.sources.kilpailumaailma import SOURCE
 from app.page_inspection import PageInspection, inspect_pages
-from app.snapshot_api import DEFAULT_TOKEN_PATH, create_app, load_or_create_api_token
+from app.snapshot_api import (
+    DEFAULT_TOKEN_PATH,
+    create_app,
+    initialize_snapshot_schema,
+    load_or_create_api_token,
+)
+from app.snapshot_prepare import load_prepared_package, prepare_snapshot_package
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -99,6 +106,40 @@ def build_parser() -> argparse.ArgumentParser:
     extension_parser.add_argument("--server", default="http://127.0.0.1:8765")
     extension_parser.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN_PATH)
 
+    snapshots_parser = subparsers.add_parser(
+        "snapshots",
+        help="List Chrome Extension snapshot tasks stored in SQLite.",
+    )
+    _add_database_argument(snapshots_parser)
+
+    snapshot_show_parser = subparsers.add_parser(
+        "snapshot-show",
+        help="Show one Chrome Extension snapshot stored in SQLite.",
+    )
+    snapshot_show_parser.add_argument("id", type=int, help="Snapshot task ID.")
+    _add_database_argument(snapshot_show_parser)
+
+    snapshot_check_parser = subparsers.add_parser(
+        "snapshot-check",
+        help="Check the coverage and useful findings of one stored snapshot.",
+    )
+    snapshot_check_parser.add_argument("id", type=int, help="Snapshot task ID.")
+    _add_database_argument(snapshot_check_parser)
+
+    snapshot_prepare_parser = subparsers.add_parser(
+        "snapshot-prepare",
+        help="Build and save an LLM-ready package for one entry snapshot.",
+    )
+    snapshot_prepare_parser.add_argument("id", type=int, help="Entry snapshot task ID.")
+    _add_database_argument(snapshot_prepare_parser)
+
+    prepared_show_parser = subparsers.add_parser(
+        "prepared-show",
+        help="Show a previously prepared snapshot package.",
+    )
+    prepared_show_parser.add_argument("id", type=int, help="Entry snapshot task ID.")
+    _add_database_argument(prepared_show_parser)
+
     return parser
 
 
@@ -144,6 +185,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _queue_extension_inspection(
             args.database, args.id, args.server, args.token_file
         )
+    if args.command == "snapshots":
+        return _list_snapshot_tasks(args.database)
+    if args.command == "snapshot-show":
+        return _show_browser_snapshot(args.database, args.id)
+    if args.command == "snapshot-check":
+        return _check_browser_snapshot(args.database, args.id)
+    if args.command == "snapshot-prepare":
+        return _prepare_browser_snapshot(args.database, args.id)
+    if args.command == "prepared-show":
+        return _show_prepared_snapshot(args.database, args.id)
 
     if args.timeout <= 0:
         print("Error: timeout must be greater than zero.", file=sys.stderr)
@@ -233,6 +284,205 @@ def _queue_extension_inspection(
         print(f"Queue request failed: {error}", file=sys.stderr)
         return 1
     print("The dedicated Chrome profile will open and read the queued URL.")
+    return 0
+
+
+def _list_snapshot_tasks(database_path: Path) -> int:
+    """Print Chrome Extension tasks without requiring the API server."""
+
+    try:
+        with closing(connect_database(database_path)) as connection:
+            initialize_snapshot_schema(connection)
+            rows = connection.execute(
+                """
+                SELECT id, competition_id, status, url, created_at,
+                       parent_task_id, document_type
+                FROM extension_tasks ORDER BY id DESC
+                """
+            ).fetchall()
+    except sqlite3.OperationalError as error:
+        if "no such table" in str(error):
+            print("No snapshot tasks found. Start 'server' once first.")
+            return 0
+        print(f"Database read failed: {error}", file=sys.stderr)
+        return 1
+    except (OSError, sqlite3.Error) as error:
+        print(f"Database read failed: {error}", file=sys.stderr)
+        return 1
+
+    print(f"Snapshot tasks: {len(rows)}")
+    if not rows:
+        print("No snapshot tasks found. Run 'read-page ID' first.")
+        return 0
+    print()
+    print(f"{'Task':>5}  {'Parent':>6}  {'Type':<9}  {'Status':<28}  URL")
+    print(f"{'-' * 5}  {'-' * 6}  {'-' * 9}  {'-' * 28}  {'-' * 50}")
+    for row in rows:
+        parent_id = row["parent_task_id"] or "-"
+        print(
+            f"{row['id']:>5}  {str(parent_id):>6}  {row['document_type']:<9}  "
+            f"{_truncate(row['status'], 28):<28}  {_truncate(row['url'], 80)}"
+        )
+    return 0
+
+
+def _show_browser_snapshot(database_path: Path, task_id: int) -> int:
+    """Print the latest stored snapshot for a task as readable JSON."""
+
+    if task_id <= 0:
+        print("Error: snapshot task ID must be greater than zero.", file=sys.stderr)
+        return 2
+    try:
+        with closing(connect_database(database_path)) as connection:
+            initialize_snapshot_schema(connection)
+            row = connection.execute(
+                """
+                SELECT payload_json FROM browser_snapshots
+                WHERE task_id = ? ORDER BY id DESC LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+    except sqlite3.OperationalError as error:
+        if "no such table" in str(error):
+            print("No snapshots found. Start 'server' and run 'read-page ID' first.")
+            return 1
+        print(f"Database read failed: {error}", file=sys.stderr)
+        return 1
+    except (OSError, sqlite3.Error) as error:
+        print(f"Database read failed: {error}", file=sys.stderr)
+        return 1
+    if row is None:
+        print(f"Snapshot for task {task_id} was not found.", file=sys.stderr)
+        print("Run 'snapshots' to see available task IDs.", file=sys.stderr)
+        return 1
+    try:
+        payload = json.loads(row["payload_json"])
+    except (TypeError, json.JSONDecodeError) as error:
+        print(f"Stored snapshot is invalid: {error}", file=sys.stderr)
+        return 1
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _load_browser_snapshot(database_path: Path, task_id: int) -> dict | None:
+    """Load and decode the newest snapshot payload for a task."""
+
+    with closing(connect_database(database_path)) as connection:
+        initialize_snapshot_schema(connection)
+        row = connection.execute(
+            """
+            SELECT payload_json FROM browser_snapshots
+            WHERE task_id = ? ORDER BY id DESC LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+    return json.loads(row["payload_json"]) if row else None
+
+
+def _check_browser_snapshot(database_path: Path, task_id: int) -> int:
+    """Print a conservative, non-LLM snapshot coverage report."""
+
+    try:
+        payload = _load_browser_snapshot(database_path, task_id)
+    except (OSError, sqlite3.Error, json.JSONDecodeError) as error:
+        print(f"Snapshot read failed: {error}", file=sys.stderr)
+        return 1
+    if payload is None:
+        print(f"Snapshot for task {task_id} was not found.", file=sys.stderr)
+        return 1
+
+    fields = payload.get("fields", [])
+    links = payload.get("links", [])
+    buttons = payload.get("buttons", [])
+    text = payload.get("visible_text", "")
+    searchable = " ".join(
+        [text]
+        + [
+            f"{field.get('name', '')} {field.get('label', '')} "
+            f"{field.get('context', '')}"
+            for field in fields
+        ]
+    ).lower()
+    phone = any(
+        field.get("field_type") == "tel"
+        or "phone" in str(field.get("name", "")).lower()
+        or "puhel" in str(field.get("label", "")).lower()
+        for field in fields
+    )
+    consent = any(field.get("purpose") == "consent" for field in fields)
+    privacy = any(item.get("purpose") == "privacy" for item in [*links, *buttons])
+    rules = any(item.get("purpose") == "rules" for item in [*links, *buttons])
+    custom_controls = sum(bool(field.get("role")) for field in fields)
+    warnings = []
+    if not fields:
+        warnings.append("No form controls were found.")
+    if fields and not any(field.get("required") for field in fields):
+        warnings.append("Required fields could not be confirmed from HTML or ARIA attributes.")
+    if any(word in searchable for word in ("tietosuoja", "privacy")) and not privacy:
+        warnings.append("Privacy text was visible, but no privacy element was identified.")
+    if any(word in searchable for word in ("käyttöeh", "säänn", "terms")) and not rules:
+        warnings.append("Rules text was visible, but no rules element was identified.")
+
+    quality = "good" if fields and not warnings else "partial" if text else "poor"
+    print(f"Snapshot task: {task_id}")
+    print(f"Snapshot quality: {quality}")
+    print(f"Visible text: {'yes' if text else 'no'}")
+    print(f"Fields found: {len(fields)}")
+    print(f"Custom controls found: {custom_controls}")
+    print(f"Phone field: {'yes' if phone else 'no'}")
+    print(f"Consent controls: {'yes' if consent else 'no'}")
+    print(f"Privacy element: {'yes' if privacy else 'no'}")
+    print(f"Rules element: {'yes' if rules else 'no'}")
+    print(
+        "Manual verification: "
+        f"{'yes' if payload.get('manual_verification_required') else 'no'}"
+    )
+    if warnings:
+        print("Warnings:")
+        for warning in warnings:
+            print(f"  - {warning}")
+    return 0
+
+
+def _prepare_browser_snapshot(database_path: Path, task_id: int) -> int:
+    """Build, store, and summarize an LLM-ready snapshot package."""
+
+    try:
+        with closing(connect_database(database_path)) as connection:
+            initialize_snapshot_schema(connection)
+            package = prepare_snapshot_package(connection, task_id)
+    except (OSError, sqlite3.Error, json.JSONDecodeError, ValueError) as error:
+        print(f"Snapshot prepare failed: {error}", file=sys.stderr)
+        return 1
+    legal_documents = package["legal_documents"]
+    available = sum(document["source_available"] for document in legal_documents)
+    print(f"Prepared snapshot task {task_id} and saved it to SQLite.")
+    print(f"Fields: {package['form']['field_count']}")
+    print(f"Field groups: {', '.join(package['form']['groups']) or '-'}")
+    print(f"Legal documents ready: {available}/{len(legal_documents)}")
+    print(f"Warnings: {len(package['collection_warnings'])}")
+    print(f"Use 'prepared-show {task_id}' to print the complete JSON package.")
+    return 0
+
+
+def _show_prepared_snapshot(database_path: Path, task_id: int) -> int:
+    """Print a stored LLM-ready package as readable JSON."""
+
+    try:
+        with closing(connect_database(database_path)) as connection:
+            initialize_snapshot_schema(connection)
+            package = load_prepared_package(connection, task_id)
+    except (OSError, sqlite3.Error, json.JSONDecodeError) as error:
+        print(f"Prepared snapshot read failed: {error}", file=sys.stderr)
+        return 1
+    if package is None:
+        print(
+            f"Prepared snapshot for task {task_id} was not found. "
+            f"Run 'snapshot-prepare {task_id}' first.",
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps(package, ensure_ascii=False, indent=2))
     return 0
 
 

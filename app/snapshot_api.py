@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 from app.database import DEFAULT_DATABASE_PATH, connect_database, initialize_database
+from app.snapshot_prepare import initialize_prepared_schema, load_prepared_package
 
 
 DEFAULT_TOKEN_PATH = DEFAULT_DATABASE_PATH.parent / "extension_api.token"
@@ -26,6 +27,9 @@ CREATE TABLE IF NOT EXISTS extension_tasks (
     claimed_at TEXT,
     completed_at TEXT,
     error_message TEXT,
+    parent_task_id INTEGER,
+    document_type TEXT NOT NULL DEFAULT 'entry',
+    FOREIGN KEY (parent_task_id) REFERENCES extension_tasks (id) ON DELETE CASCADE,
     FOREIGN KEY (competition_id) REFERENCES competitions (id) ON DELETE SET NULL
 );
 
@@ -58,8 +62,11 @@ class SnapshotField(BaseModel):
     frame_url: str = Field(max_length=4_000)
     tag: str = Field(max_length=30)
     field_type: str = Field(max_length=50)
+    role: str | None = Field(default=None, max_length=50)
     name: str | None = Field(default=None, max_length=500)
     label: str | None = Field(default=None, max_length=2_000)
+    context: str | None = Field(default=None, max_length=1_500)
+    purpose: Literal["generic", "privacy", "rules", "consent"] = "generic"
     required: bool
     disabled: bool
     checked: bool | None = None
@@ -74,6 +81,7 @@ class SnapshotLink(BaseModel):
     frame_url: str = Field(max_length=4_000)
     text: str = Field(max_length=2_000)
     url: str = Field(max_length=4_000)
+    purpose: Literal["generic", "privacy", "rules", "consent"] = "generic"
 
 
 class SnapshotButton(BaseModel):
@@ -84,6 +92,7 @@ class SnapshotButton(BaseModel):
     text: str = Field(max_length=2_000)
     button_type: str = Field(max_length=50)
     disabled: bool
+    purpose: Literal["generic", "privacy", "rules", "consent"] = "generic"
 
 
 class BrowserSnapshot(BaseModel):
@@ -111,6 +120,8 @@ class TaskCreate(BaseModel):
 
     competition_id: int | None = Field(default=None, gt=0)
     url: HttpUrl
+    parent_task_id: int | None = Field(default=None, gt=0)
+    document_type: Literal["entry", "privacy", "rules"] = "entry"
 
 
 class TaskResponse(BaseModel):
@@ -119,6 +130,8 @@ class TaskResponse(BaseModel):
     url: str
     status: str
     created_at: str
+    parent_task_id: int | None = None
+    document_type: Literal["entry", "privacy", "rules"] = "entry"
 
 
 def load_or_create_api_token(token_path: Path = DEFAULT_TOKEN_PATH) -> str:
@@ -137,7 +150,18 @@ def load_or_create_api_token(token_path: Path = DEFAULT_TOKEN_PATH) -> str:
 def initialize_snapshot_schema(connection: sqlite3.Connection) -> None:
     with connection:
         connection.executescript(SNAPSHOT_SCHEMA_SQL)
-        connection.execute("PRAGMA user_version = 6")
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(extension_tasks)")
+        }
+        if "parent_task_id" not in columns:
+            connection.execute("ALTER TABLE extension_tasks ADD COLUMN parent_task_id INTEGER")
+        if "document_type" not in columns:
+            connection.execute(
+                "ALTER TABLE extension_tasks "
+                "ADD COLUMN document_type TEXT NOT NULL DEFAULT 'entry'"
+            )
+        initialize_prepared_schema(connection)
+        connection.execute("PRAGMA user_version = 7")
 
 
 def create_app(
@@ -182,10 +206,14 @@ def create_app(
         with closing(connect_database(database_path)) as connection, connection:
             cursor = connection.execute(
                 """
-                INSERT INTO extension_tasks (competition_id, url, status, created_at)
-                VALUES (?, ?, 'queued', ?)
+                INSERT INTO extension_tasks (
+                    competition_id, url, status, created_at, parent_task_id, document_type
+                ) VALUES (?, ?, 'queued', ?, ?, ?)
                 """,
-                (payload.competition_id, str(payload.url), timestamp),
+                (
+                    payload.competition_id, str(payload.url), timestamp,
+                    payload.parent_task_id, payload.document_type,
+                ),
             )
             task_id = cursor.lastrowid
         return TaskResponse(
@@ -194,6 +222,8 @@ def create_app(
             url=str(payload.url),
             status="queued",
             created_at=timestamp,
+            parent_task_id=payload.parent_task_id,
+            document_type=payload.document_type,
         )
 
     @application.get(
@@ -220,6 +250,8 @@ def create_app(
             url=row["url"],
             status="opening",
             created_at=row["created_at"],
+            parent_task_id=row["parent_task_id"],
+            document_type=row["document_type"],
         )
 
     @application.post(
@@ -266,7 +298,17 @@ def create_app(
                 "UPDATE extension_tasks SET status = ?, completed_at = ? WHERE id = ?",
                 (task_status, _timestamp(), task_id),
             )
-        return {"task_id": task_id, "status": task_status, "stored": True}
+            queued_documents = (
+                _queue_legal_documents(connection, task, snapshot)
+                if task["document_type"] == "entry"
+                else []
+            )
+        return {
+            "task_id": task_id,
+            "status": task_status,
+            "stored": True,
+            "queued_legal_documents": queued_documents,
+        }
 
     @application.get(
         "/api/v1/tasks/{task_id}",
@@ -286,6 +328,8 @@ def create_app(
             url=row["url"],
             status=row["status"],
             created_at=row["created_at"],
+            parent_task_id=row["parent_task_id"],
+            document_type=row["document_type"],
         )
 
     @application.get(
@@ -308,6 +352,19 @@ def create_app(
             raise HTTPException(status_code=404, detail="Snapshot not found")
         return BrowserSnapshot.model_validate_json(row["payload_json"])
 
+    @application.get(
+        "/api/v1/tasks/{task_id}/prepared",
+        dependencies=[Depends(authorize)],
+    )
+    def get_prepared(task_id: int) -> dict:
+        """Return a persisted LLM-ready package without running an LLM."""
+
+        with closing(connect_database(database_path)) as connection:
+            package = load_prepared_package(connection, task_id)
+        if package is None:
+            raise HTTPException(status_code=404, detail="Prepared snapshot not found")
+        return package
+
     return application
 
 
@@ -318,3 +375,50 @@ def _timestamp() -> str:
 def _normalized_url(url: str) -> str:
     parts = urlsplit(url)
     return parts._replace(fragment="").geturl().rstrip("/")
+
+
+def _queue_legal_documents(
+    connection: sqlite3.Connection,
+    task: sqlite3.Row,
+    snapshot: BrowserSnapshot,
+) -> list[dict[str, object]]:
+    """Queue linked privacy and rules pages as related read-only tasks."""
+
+    candidates: list[tuple[str, str]] = []
+    for link in snapshot.links:
+        url = link.url.strip()
+        if link.purpose in {"privacy", "rules"} and url.startswith(("http://", "https://")):
+            candidates.append((link.purpose, url))
+    queued = []
+    seen: set[tuple[str, str]] = set()
+    for document_type, url in candidates[:10]:
+        key = (document_type, _normalized_url(url))
+        if key in seen or key[1] in {
+            _normalized_url(str(snapshot.requested_url)),
+            _normalized_url(str(snapshot.final_url)),
+        }:
+            continue
+        seen.add(key)
+        existing = connection.execute(
+            """
+            SELECT id FROM extension_tasks
+            WHERE parent_task_id = ? AND document_type = ? AND url = ?
+            """,
+            (task["id"], document_type, url),
+        ).fetchone()
+        if existing:
+            continue
+        cursor = connection.execute(
+            """
+            INSERT INTO extension_tasks (
+                competition_id, url, status, created_at, parent_task_id, document_type
+            ) VALUES (?, ?, 'queued', ?, ?, ?)
+            """,
+            (task["competition_id"], url, _timestamp(), task["id"], document_type),
+        )
+        queued.append({
+            "task_id": cursor.lastrowid,
+            "document_type": document_type,
+            "url": url,
+        })
+    return queued

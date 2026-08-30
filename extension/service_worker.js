@@ -54,7 +54,8 @@ async function pollForTask() {
 async function openAndCapture(task) {
   const tab = await chrome.tabs.create({ url: task.url, active: true });
   await waitForTab(tab.id, 60000);
-  await new Promise((resolve) => setTimeout(resolve, 1200));
+  // Give client-rendered forms a moment to appear after the load event.
+  await new Promise((resolve) => setTimeout(resolve, 2500));
   const frameResults = await chrome.scripting.executeScript({
     target: { tabId: tab.id, allFrames: true },
     files: ["content.js"]

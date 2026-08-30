@@ -65,6 +65,11 @@ def test_help_command_lists_available_commands(capsys) -> None:
     assert exit_code == 0
     assert "snapshot-serve" in output.out
     assert "extension-inspect" in output.out
+    assert "snapshots" in output.out
+    assert "snapshot-show" in output.out
+    assert "snapshot-check" in output.out
+    assert "snapshot-prepare" in output.out
+    assert "prepared-show" in output.out
     assert "Show all available commands." in output.out
 
 

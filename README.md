@@ -163,6 +163,12 @@ python -m pip install -e ".[dev]"
 snapshot-serve
 ```
 
+The shorter PowerShell command for starting the same localhost server is:
+
+```powershell
+server
+```
+
 The server creates `data/extension_api.token` and prints its path. In the
 dedicated Chrome profile, open `chrome://extensions`, enable Developer mode,
 choose **Load unpacked**, and select this repository's `extension` directory.
@@ -174,6 +180,52 @@ Queue all entry URLs for one stored competition in a second PowerShell:
 ```powershell
 .\.venv\Scripts\Activate.ps1
 extension-inspect 4
+```
+
+The shorter command is:
+
+```powershell
+read-page 4
+```
+
+List all extension tasks and show a stored snapshot directly from SQLite:
+
+```powershell
+snapshots
+snapshot-show 1
+snapshot-check 1
+```
+
+The number passed to `snapshot-show` is the task ID printed by `read-page` and
+listed by `snapshots`. The localhost server is not required when reading an
+already stored snapshot.
+
+`snapshot-check` prints a deterministic coverage report for fields, custom ARIA
+controls, consent controls, privacy and rules elements, and manual verification.
+It does not use an LLM and does not interact with the form.
+
+When an entry snapshot contains direct HTTP(S) links classified as privacy or
+rules documents, the backend automatically queues those URLs as related
+read-only tasks. The extension opens and captures them normally. It never clicks
+modal dialogs; a legal element without a URL is retained as unresolved.
+
+After the entry page and its queued legal-document tasks have completed, build
+and persist the grouped LLM-ready package:
+
+```powershell
+snapshot-prepare 2
+prepared-show 2
+```
+
+Use the entry task ID, not a privacy/rules child task ID. The prepared JSON is
+stored in SQLite and includes grouped identity, contact, address, choice and
+consent fields, source references, legal-document text, collection warnings and
+an explicit warning that all webpage content is untrusted. No LLM is called.
+
+The same persisted package is available to a later local analysis client at:
+
+```text
+GET /api/v1/tasks/{entry_task_id}/prepared
 ```
 
 The extension polls the API, opens the queued URL in a normal tab, reads the

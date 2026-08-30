@@ -30,6 +30,13 @@ show = "app.command_shortcuts:show"
 inspect = "app.command_shortcuts:inspect"
 snapshot-serve = "app.command_shortcuts:snapshot_serve"
 extension-inspect = "app.command_shortcuts:extension_inspect"
+server = "app.command_shortcuts:server"
+read-page = "app.command_shortcuts:read_page"
+snapshots = "app.command_shortcuts:snapshots"
+snapshot-show = "app.command_shortcuts:snapshot_show"
+snapshot-check = "app.command_shortcuts:snapshot_check"
+snapshot-prepare = "app.command_shortcuts:snapshot_prepare"
+prepared-show = "app.command_shortcuts:prepared_show"
 giveaway-help = "app.command_shortcuts:show_help"
 
 [tool.pytest.ini_options]

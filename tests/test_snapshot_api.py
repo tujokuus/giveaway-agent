@@ -115,3 +115,46 @@ def test_snapshot_rejects_task_url_mismatch(tmp_path) -> None:
     )
     assert response.status_code == 400
     assert response.json()["detail"] == "Requested URL mismatch"
+
+
+def test_entry_snapshot_queues_linked_legal_documents(tmp_path) -> None:
+    client = client_for(tmp_path / "snapshots.sqlite3")
+    created = client.post(
+        "/api/v1/tasks", headers=headers(),
+        json={"url": "https://example.test/giveaway"},
+    )
+    task_id = created.json()["id"]
+    client.get("/api/v1/tasks/next", headers=headers())
+    response = client.post(
+        f"/api/v1/tasks/{task_id}/snapshot",
+        headers=headers(),
+        json={
+            "schema_version": 1,
+            "task_id": task_id,
+            "requested_url": "https://example.test/giveaway",
+            "final_url": "https://example.test/giveaway",
+            "title": "Giveaway",
+            "captured_at": "2026-08-30T12:00:00Z",
+            "status": "captured",
+            "manual_verification_required": False,
+            "visible_text": "Privacy and rules",
+            "links": [
+                {
+                    "element_ref": "f0_e1", "frame_url": "https://example.test/giveaway",
+                    "text": "Privacy", "url": "https://example.test/privacy",
+                    "purpose": "privacy",
+                },
+                {
+                    "element_ref": "f0_e2", "frame_url": "https://example.test/giveaway",
+                    "text": "Rules", "url": "https://example.test/rules",
+                    "purpose": "rules",
+                },
+            ],
+        },
+    )
+    queued = response.json()["queued_legal_documents"]
+    assert [item["document_type"] for item in queued] == ["privacy", "rules"]
+
+    next_task = client.get("/api/v1/tasks/next", headers=headers()).json()
+    assert next_task["parent_task_id"] == task_id
+    assert next_task["document_type"] == "privacy"
