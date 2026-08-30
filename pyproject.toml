@@ -19,8 +19,20 @@ dev = [
     "pytest>=8,<9",
 ]
 
+[project.scripts]
+giveaway-agent = "app.command_shortcuts:giveaway_agent"
+fetch = "app.command_shortcuts:fetch"
+discover = "app.command_shortcuts:discover"
+list = "app.command_shortcuts:list_items"
+show = "app.command_shortcuts:show"
+inspect = "app.command_shortcuts:inspect"
+giveaway-help = "app.command_shortcuts:show_help"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.setuptools]
+py-modules = ["main"]

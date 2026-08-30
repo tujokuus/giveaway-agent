@@ -29,8 +29,16 @@ from app.page_inspection import PageInspection, inspect_pages
 def build_parser() -> argparse.ArgumentParser:
     """Create the command-line parser."""
 
-    parser = argparse.ArgumentParser(prog="giveaway-agent")
+    parser = argparse.ArgumentParser(
+        prog="giveaway-agent",
+        description="Discover and locally inspect online competitions.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser(
+        "help",
+        help="Show all available commands.",
+    )
 
     fetch_parser = subparsers.add_parser(
         "fetch",
@@ -101,7 +109,12 @@ def _add_timeout_argument(parser: argparse.ArgumentParser) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the requested command and return a process exit code."""
 
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command == "help":
+        parser.print_help()
+        return 0
 
     if args.command == "list":
         return _list_stored_competitions(args.database)

@@ -19,6 +19,22 @@ python -m pip install -e ".[dev]"
 python -m playwright install chromium
 ```
 
+After activating the virtual environment, the installed short commands are:
+
+```powershell
+help.exe
+list
+show 1
+inspect 1
+discover
+fetch https://example.com
+```
+
+PowerShell already reserves the plain name `help` for its own help function.
+Use `giveaway-help` or `giveaway-agent help` if you do not want to write
+`help.exe`. The unified command also supports every operation, for example
+`giveaway-agent show 1`.
+
 ## Discover competitions
 
 The default source is `https://www.kilpailumaailma.com/`:

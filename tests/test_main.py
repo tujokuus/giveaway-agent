@@ -58,6 +58,15 @@ def test_fetch_command_prints_response_summary(monkeypatch, capsys) -> None:
     assert output.err == ""
 
 
+def test_help_command_lists_available_commands(capsys) -> None:
+    exit_code = cli.main(["help"])
+
+    output = capsys.readouterr()
+    assert exit_code == 0
+    assert "{help,fetch,discover,list,show,inspect}" in output.out
+    assert "Show all available commands." in output.out
+
+
 def test_discover_command_saves_and_prints_competition_metadata(
     monkeypatch,
     capsys,
