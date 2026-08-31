@@ -266,6 +266,42 @@ compacts each entry task, and prints each compact JSON package. The default wait
 limit is 180 seconds and can be changed with `--wait`, for example
 `snapshot-run 4 --wait 300`.
 
+## Local Ollama analysis
+
+Install Ollama separately, start it, and download the default lightweight model:
+
+```powershell
+ollama pull qwen3.5:4b
+```
+
+Analyze a compact package using its entry snapshot task ID:
+
+```powershell
+llm-analyze 11
+```
+
+Use another installed model or Ollama address when needed:
+
+```powershell
+llm-analyze 11 --model qwen3.5:9b --ollama http://127.0.0.1:11434
+```
+
+The model receives only the compact package. It has no browser actions, tools,
+JavaScript or shell access. The Ollama structured-output schema constrains the
+response, Pydantic validates it, and evidence references not present in the
+compact input are rejected. A valid result is saved in SQLite and printed. Show
+the stored result later without running the model again:
+
+```powershell
+analysis-show 11
+```
+
+The stored analysis is also available from the authenticated local API:
+
+```text
+GET /api/v1/tasks/{entry_task_id}/analysis
+```
+
 For a legal modal whose content appears only after interaction, open the modal
 yourself in the tab originally opened by Giveaway Agent. Click the extension
 icon and choose **Capture current tab**. The extension reads the now-visible DOM

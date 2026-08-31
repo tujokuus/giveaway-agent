@@ -34,6 +34,7 @@ from app.snapshot_api import (
 )
 from app.snapshot_prepare import load_prepared_package, prepare_snapshot_package
 from app.snapshot_compact import compact_snapshot_package, load_compact_package
+from app.llm_analysis import analyze_compact_package, load_llm_analysis
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -175,6 +176,23 @@ def build_parser() -> argparse.ArgumentParser:
     compact_show_parser.add_argument("id", type=int, help="Entry snapshot task ID.")
     _add_database_argument(compact_show_parser)
 
+    llm_parser = subparsers.add_parser(
+        "llm-analyze",
+        help="Analyze one compact package with a local Ollama model.",
+    )
+    llm_parser.add_argument("id", type=int, help="Entry snapshot task ID.")
+    _add_database_argument(llm_parser)
+    llm_parser.add_argument("--model", default="qwen3.5:4b")
+    llm_parser.add_argument("--ollama", default="http://127.0.0.1:11434")
+    llm_parser.add_argument("--timeout", type=float, default=300)
+
+    analysis_show_parser = subparsers.add_parser(
+        "analysis-show",
+        help="Show a previously saved validated LLM analysis.",
+    )
+    analysis_show_parser.add_argument("id", type=int, help="Entry snapshot task ID.")
+    _add_database_argument(analysis_show_parser)
+
     return parser
 
 
@@ -238,6 +256,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _compact_browser_snapshot(args.database, args.id)
     if args.command == "compact-show":
         return _show_compact_snapshot(args.database, args.id)
+    if args.command == "llm-analyze":
+        return _analyze_compact_snapshot(
+            args.database, args.id, args.model, args.ollama, args.timeout
+        )
+    if args.command == "analysis-show":
+        return _show_llm_analysis(args.database, args.id)
 
     if args.timeout <= 0:
         print("Error: timeout must be greater than zero.", file=sys.stderr)
@@ -686,6 +710,57 @@ def _show_compact_snapshot(database_path: Path, task_id: int) -> int:
         )
         return 1
     print(json.dumps(package, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _analyze_compact_snapshot(
+    database_path: Path,
+    task_id: int,
+    model_name: str,
+    ollama_url: str,
+    timeout_seconds: float,
+) -> int:
+    """Run local schema-constrained analysis and print the validated JSON."""
+
+    if timeout_seconds <= 0:
+        print("Error: timeout must be greater than zero.", file=sys.stderr)
+        return 2
+    try:
+        with closing(connect_database(database_path)) as connection:
+            initialize_snapshot_schema(connection)
+            analysis = analyze_compact_package(
+                connection,
+                task_id,
+                model_name=model_name,
+                ollama_url=ollama_url,
+                timeout_seconds=timeout_seconds,
+            )
+    except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
+        print(f"LLM analysis failed: {error}", file=sys.stderr)
+        return 1
+    print(f"Validated analysis for snapshot task {task_id} using {model_name}:")
+    print(json.dumps(analysis.model_dump(mode="json"), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _show_llm_analysis(database_path: Path, task_id: int) -> int:
+    """Print one analysis previously stored in SQLite."""
+
+    try:
+        with closing(connect_database(database_path)) as connection:
+            initialize_snapshot_schema(connection)
+            analysis = load_llm_analysis(connection, task_id)
+    except (OSError, sqlite3.Error, ValueError) as error:
+        print(f"LLM analysis read failed: {error}", file=sys.stderr)
+        return 1
+    if analysis is None:
+        print(
+            f"Analysis for task {task_id} was not found. "
+            f"Run 'llm-analyze {task_id}' first.",
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps(analysis.model_dump(mode="json"), ensure_ascii=False, indent=2))
     return 0
 
 

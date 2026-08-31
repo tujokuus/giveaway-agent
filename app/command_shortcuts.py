@@ -109,5 +109,17 @@ def snapshot_run() -> int:
     return _run("snapshot-run")
 
 
+def llm_analyze() -> int:
+    """Analyze a compact package with local Ollama."""
+
+    return _run("llm-analyze")
+
+
+def analysis_show() -> int:
+    """Show a stored validated LLM analysis."""
+
+    return _run("analysis-show")
+
+
 def show_help() -> int:
     return _run("help")

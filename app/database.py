@@ -186,7 +186,7 @@ def initialize_database(connection: sqlite3.Connection) -> None:
                 connection.execute(
                     f"ALTER TABLE page_inspections ADD COLUMN {column} {definition}"
                 )
-        connection.execute("PRAGMA user_version = 8")
+        connection.execute("PRAGMA user_version = 9")
 
 
 def save_page_inspections(

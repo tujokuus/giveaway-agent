@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 from app.database import DEFAULT_DATABASE_PATH, connect_database, initialize_database
 from app.snapshot_prepare import initialize_prepared_schema, load_prepared_package
 from app.snapshot_compact import initialize_compact_schema, load_compact_package
+from app.llm_analysis import initialize_analysis_schema, load_llm_analysis
 
 
 DEFAULT_TOKEN_PATH = DEFAULT_DATABASE_PATH.parent / "extension_api.token"
@@ -192,7 +193,8 @@ def initialize_snapshot_schema(connection: sqlite3.Connection) -> None:
             )
         initialize_prepared_schema(connection)
         initialize_compact_schema(connection)
-        connection.execute("PRAGMA user_version = 8")
+        initialize_analysis_schema(connection)
+        connection.execute("PRAGMA user_version = 9")
 
 
 def create_app(
@@ -408,6 +410,19 @@ def create_app(
         if package is None:
             raise HTTPException(status_code=404, detail="Compact snapshot not found")
         return package
+
+    @application.get(
+        "/api/v1/tasks/{task_id}/analysis",
+        dependencies=[Depends(authorize)],
+    )
+    def get_analysis(task_id: int) -> dict:
+        """Return the persisted validated local-LLM analysis."""
+
+        with closing(connect_database(database_path)) as connection:
+            analysis = load_llm_analysis(connection, task_id)
+        if analysis is None:
+            raise HTTPException(status_code=404, detail="LLM analysis not found")
+        return analysis.model_dump(mode="json")
 
     return application
 
