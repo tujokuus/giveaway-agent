@@ -36,7 +36,11 @@ from app.snapshot_api import (
 )
 from app.snapshot_prepare import load_prepared_package, prepare_snapshot_package
 from app.snapshot_compact import compact_snapshot_package, load_compact_package
-from app.llm_analysis import analyze_compact_package, load_llm_analysis
+from app.llm_analysis import (
+    analyze_compact_package,
+    load_giveaway_summary,
+    load_llm_analysis,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -234,10 +238,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     analysis_show_parser = subparsers.add_parser(
         "analysis-show",
-        help="Show a previously saved validated LLM analysis.",
+        help="Show a lightweight summary, or a legacy analysis when needed.",
     )
     analysis_show_parser.add_argument("id", type=int, help="Entry snapshot task ID.")
     _add_database_argument(analysis_show_parser)
+
+    summary_show_parser = subparsers.add_parser(
+        "summary-show",
+        help="Show a previously saved lightweight giveaway summary.",
+    )
+    summary_show_parser.add_argument("id", type=int, help="Entry snapshot task ID.")
+    _add_database_argument(summary_show_parser)
 
     return parser
 
@@ -352,6 +363,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if args.command == "analysis-show":
         return _show_llm_analysis(args.database, args.id)
+    if args.command == "summary-show":
+        return _show_giveaway_summary(args.database, args.id)
 
     if args.timeout <= 0:
         print("Error: timeout must be greater than zero.", file=sys.stderr)
@@ -610,8 +623,8 @@ def _run_pending_giveaway_batch(
                 WHERE NOT EXISTS (
                     SELECT 1
                     FROM extension_tasks AS task
-                    JOIN llm_analyses AS analysis
-                      ON analysis.root_task_id = task.id
+                    JOIN giveaway_summaries AS summary
+                      ON summary.root_task_id = task.id
                     WHERE task.competition_id = c.id
                       AND task.parent_task_id IS NULL
                 )
@@ -624,7 +637,7 @@ def _run_pending_giveaway_batch(
 
     selected = rows if limit is None else rows[:limit]
     if not selected:
-        print("No pending competitions found. Every competition has a saved analysis.")
+        print("No pending competitions found. Every competition has a saved summary.")
         return 0
 
     print(
@@ -1108,7 +1121,7 @@ def _analyze_compact_snapshot(
     except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
         print(f"LLM analysis failed: {error}", file=sys.stderr)
         return 1
-    print(f"Validated analysis for snapshot task {task_id} using {model_name}:")
+    print(f"Validated lightweight summary for snapshot task {task_id} using {model_name}:")
     print(json.dumps(analysis.model_dump(mode="json"), ensure_ascii=False, indent=2))
     return 0
 
@@ -1124,12 +1137,14 @@ def _display_duration(seconds: float) -> str:
 
 
 def _show_llm_analysis(database_path: Path, task_id: int) -> int:
-    """Print one analysis previously stored in SQLite."""
+    """Prefer the lightweight summary and retain access to legacy analyses."""
 
     try:
         with closing(connect_database(database_path)) as connection:
             initialize_snapshot_schema(connection)
-            analysis = load_llm_analysis(connection, task_id)
+            analysis = load_giveaway_summary(connection, task_id)
+            if analysis is None:
+                analysis = load_llm_analysis(connection, task_id)
     except (OSError, sqlite3.Error, ValueError) as error:
         print(f"LLM analysis read failed: {error}", file=sys.stderr)
         return 1
@@ -1141,6 +1156,27 @@ def _show_llm_analysis(database_path: Path, task_id: int) -> int:
         )
         return 1
     print(json.dumps(analysis.model_dump(mode="json"), ensure_ascii=False, indent=2))
+    return 0
+
+
+def _show_giveaway_summary(database_path: Path, task_id: int) -> int:
+    """Print only the new lightweight result stored in SQLite."""
+
+    try:
+        with closing(connect_database(database_path)) as connection:
+            initialize_snapshot_schema(connection)
+            summary = load_giveaway_summary(connection, task_id)
+    except (OSError, sqlite3.Error, ValueError) as error:
+        print(f"Giveaway summary read failed: {error}", file=sys.stderr)
+        return 1
+    if summary is None:
+        print(
+            f"Summary for task {task_id} was not found. "
+            f"Run 'llm-analyze {task_id}' first.",
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps(summary.model_dump(mode="json"), ensure_ascii=False, indent=2))
     return 0
 
 

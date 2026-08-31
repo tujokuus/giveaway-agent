@@ -88,9 +88,27 @@ async function captureTabForTask(tabId, task, { openLegalElements = false } = {}
       });
       await new Promise((resolve) => setTimeout(resolve, 1500));
       frameResults = await readTabFrames(tabId);
-      externalLegalSections = await captureOpenedLegalTabs(
+      const beforeMain = beforeResults.find((item) => item.frameId === 0)?.result;
+      const afterMain = frameResults.find((item) => item.frameId === 0)?.result;
+      if (
+        beforeMain?.url && afterMain?.url
+        && !sameDocumentUrl(beforeMain.url, afterMain.url)
+      ) {
+        const documentTypes = interactionDocumentTypes(interactionResults);
+        if (afterMain.visible_text && documentTypes.length) {
+          externalLegalSections.push({
+            element_ref: `same_tab_${tabId}`,
+            frame_url: afterMain.url,
+            document_types: documentTypes,
+            text: afterMain.visible_text.slice(0, 30000),
+            visibility: "visible"
+          });
+        }
+        frameResults = beforeResults;
+      }
+      externalLegalSections.push(...await captureOpenedLegalTabs(
         tabId, knownTabs, interactionResults
-      );
+      ));
     } catch (_error) {
       // Preserve the initial read-only snapshot if a controlled click navigates away.
       frameResults = beforeResults;
@@ -107,9 +125,7 @@ async function captureTabForTask(tabId, task, { openLegalElements = false } = {}
 }
 
 async function captureOpenedLegalTabs(openerTabId, knownTabs, interactionResults) {
-  const documentTypes = [...new Set(interactionResults.flatMap((frame) =>
-    (frame.result?.interactions || []).map((item) => item.document_type)
-  ))];
+  const documentTypes = interactionDocumentTypes(interactionResults);
   if (!documentTypes.length) return [];
   const tabs = (await chrome.tabs.query({})).filter((tab) =>
     tab.id && !knownTabs.has(tab.id) && tab.openerTabId === openerTabId
@@ -140,6 +156,24 @@ async function captureOpenedLegalTabs(openerTabId, knownTabs, interactionResults
     }
   }
   return sections;
+}
+
+function interactionDocumentTypes(interactionResults) {
+  return [...new Set(interactionResults.flatMap((frame) =>
+    (frame.result?.interactions || []).map((item) => item.document_type)
+  ))];
+}
+
+function sameDocumentUrl(first, second) {
+  try {
+    const left = new URL(first);
+    const right = new URL(second);
+    left.hash = "";
+    right.hash = "";
+    return left.href === right.href;
+  } catch (_error) {
+    return first === second;
+  }
 }
 
 async function captureCurrentTab() {

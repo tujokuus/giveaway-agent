@@ -206,10 +206,13 @@ It does not use an LLM and does not interact with the form.
 
 When an entry snapshot contains direct HTTP(S) links classified as privacy or
 rules documents, the backend automatically queues those URLs as related tasks.
-For rules and privacy controls without a URL, the extension may perform one of
-two predefined disclosure clicks in the main frame. It captures the DOM before
-and after the click and keeps newly revealed legal text or a legal page opened
-by that control. Submit controls, fields and consent controls are never changed.
+For rules and privacy controls without a distinct URL, the extension may perform
+one of two predefined disclosure clicks in the main frame. Supported disclosures
+include hash links, `aria-controls`, `details/summary`, common modal data
+attributes, link roles, button roles and legal controls with click handlers. It
+captures the DOM before and after the click and keeps newly revealed legal text
+or a legal page opened by that control. Submit controls, labels, fields and
+consent controls are never changed.
 An element that reveals no readable text is retained as unresolved.
 
 After the entry page and its queued legal-document tasks have completed, build
@@ -348,19 +351,22 @@ document is also skipped when the competition page or its specific rules already
 state an explicit phone-number purpose. A legal-document timeout is recorded for
 manual review instead of stopping the whole competition analysis. The compact
 package has a 12,000-character total limit and additional per-document and
-per-topic limits. The final model output contains both the requested fixed fields and open
-`additional_findings`, `unresolved_questions`, and `conflicts` sections. Analysis
-schema version 2 distinguishes observed form data from unconfirmed absence, records
-the scope of legal findings, and separates browser verification from content review.
-The Ollama
+per-topic limits. New analyses use the lightweight summary schema. It retains
+core competition facts, observed form fields, phone uses, consent controls,
+legal-source statuses, missing information and warnings. Detailed legacy
+analyses remain readable but new results are stored separately in the
+`giveaway_summaries` SQLite table. The Ollama
 structured-output schema constrains every response, Pydantic validates it, and an
 automatic correction request is made if the model invents an evidence reference.
 A valid result is saved in SQLite and printed. Show the stored result later without
 running the model again:
 
 ```powershell
-analysis-show 11
+summary-show 11
 ```
+
+`analysis-show 11` also prefers the new summary and falls back to an older
+detailed analysis when a summary has not been created.
 
 The stored analysis is also available from the authenticated local API:
 

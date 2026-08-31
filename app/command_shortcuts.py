@@ -139,5 +139,11 @@ def analysis_show() -> int:
     return _run("analysis-show")
 
 
+def summary_show() -> int:
+    """Show a stored lightweight giveaway summary."""
+
+    return _run("summary-show")
+
+
 def show_help() -> int:
     return _run("help")

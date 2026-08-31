@@ -146,16 +146,44 @@
   }).filter(Boolean).slice(0, 2000);
 
   const hiddenSeen = new Set();
-  const controlledLegalSections = queryDeep("[aria-controls]").flatMap((controller) => {
+  const legalControllerSelector = [
+    "[aria-controls]", "[data-bs-target]", "[data-target]", "[data-modal]",
+    "[data-dialog]", "[data-modal-target]", "[data-dialog-target]",
+    "[data-micromodal-trigger]", "a[href^='#']"
+  ].join(", ");
+  const controlledLegalSections = queryDeep(legalControllerSelector).flatMap((controller) => {
     const controllerText = clean(
       controller.innerText || controller.value || controller.getAttribute("aria-label")
     );
-    if (!["rules", "privacy"].includes(purposeFor(controllerText))) return [];
+    const context = clean(
+      controller.closest("label")?.innerText || controller.parentElement?.innerText,
+      1000
+    );
+    const directPurpose = purposeFor(controllerText);
+    if (
+      !["rules", "privacy"].includes(directPurpose)
+      && !["rules", "privacy"].includes(purposeFor(context))
+    ) return [];
     const root = controller.getRootNode();
-    return (controller.getAttribute("aria-controls") || "").split(/\s+/)
-      .filter(Boolean)
-      .map((id) => root.querySelector?.(`#${CSS.escape(id)}`))
-      .filter(Boolean);
+    const selectors = [];
+    for (const id of (controller.getAttribute("aria-controls") || "").split(/\s+/)) {
+      if (id) selectors.push(`#${CSS.escape(id)}`);
+    }
+    for (const attribute of [
+      "data-bs-target", "data-target", "data-modal", "data-dialog",
+      "data-modal-target", "data-dialog-target", "data-micromodal-trigger", "href"
+    ]) {
+      const value = clean(controller.getAttribute(attribute), 500);
+      if (value.startsWith("#") && value.length > 1) selectors.push(value);
+      else if (/^[A-Za-z][\w:-]*$/.test(value)) selectors.push(`#${CSS.escape(value)}`);
+    }
+    return selectors.map((selector) => {
+      try {
+        return root.querySelector?.(selector);
+      } catch (_error) {
+        return null;
+      }
+    }).filter(Boolean);
   });
   const legalSectionElements = [...new Set([
     ...queryDeep("dialog, [role=dialog], template, details, [hidden], [aria-hidden=true]"),

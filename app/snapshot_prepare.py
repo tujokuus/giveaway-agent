@@ -3,6 +3,7 @@
 import json
 import sqlite3
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 
 PREPARED_SCHEMA_SQL = """
@@ -101,7 +102,9 @@ def prepare_snapshot_package(
             purpose = item.get("purpose")
             if (
                 purpose in {"privacy", "rules"}
-                and not item.get("url")
+                and not _distinct_http_url(
+                    item.get("url"), root_snapshot.get("final_url")
+                )
                 and purpose not in captured_inline_types
             ):
                 unresolved.append({
@@ -118,6 +121,8 @@ def prepare_snapshot_package(
         if any(marker in field_text for marker in ("käyttöeh", "säänn", "terms", "rules")):
             legal_mentions.append("rules")
         for document_type in legal_mentions:
+            if document_type in captured_inline_types:
+                continue
             unresolved.append({
                 "document_type": document_type,
                 "source_ref": field.get("element_ref"),
@@ -194,6 +199,16 @@ def prepare_snapshot_package(
             (root_task_id, payload_json, package["prepared_at"]),
         )
     return package
+
+
+def _distinct_http_url(url: str | None, page_url: str | None) -> bool:
+    """Return true only for a normal HTTP link that leaves the current document."""
+
+    if not url or not url.startswith(("http://", "https://")):
+        return False
+    target = urlsplit(url)._replace(fragment="").geturl().rstrip("/")
+    current = urlsplit(page_url or "")._replace(fragment="").geturl().rstrip("/")
+    return bool(target and target != current)
 
 
 def load_prepared_package(
