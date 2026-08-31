@@ -66,6 +66,7 @@ def compact_snapshot_package(
                 document_type=document_type,
                 source_prefix=section.get("element_ref") or "embedded",
                 visibility=section.get("visibility"),
+                source_task_id=root_task_id,
             ))
     for document in prepared["legal_documents"]:
         if not document["source_available"]:
@@ -84,12 +85,13 @@ def compact_snapshot_package(
                 document_type=document["document_type"],
                 source_prefix=section.get("element_ref") or f"task:{document['task_id']}",
                 visibility=section.get("visibility"),
+                source_task_id=document["task_id"],
             ))
 
     evidence, duplicate_count, omitted_count = _select_evidence(candidates)
     compacted_at = datetime.now(UTC).isoformat()
     package = {
-        "schema_version": 1,
+        "schema_version": 3,
         "source_task_id": root_task_id,
         "competition_id": prepared["competition_id"],
         "compacted_at": compacted_at,
@@ -104,11 +106,7 @@ def compact_snapshot_package(
             "field_count": prepared["form"]["field_count"],
             "groups": prepared["form"]["groups"],
             "consents": prepared["form"]["consents"],
-            "relevant_buttons": [
-                button for button in prepared["form"].get("buttons", [])
-                if button.get("button_type") == "submit"
-                or button.get("purpose") in {"consent", "privacy", "rules"}
-            ],
+            "relevant_buttons": _relevant_buttons(prepared["form"]),
         },
         "evidence": evidence,
         "legal_document_status": [
@@ -129,7 +127,7 @@ def compact_snapshot_package(
             "duplicates_removed": duplicate_count,
             "relevant_blocks_omitted_by_limits": omitted_count,
             "total_evidence_characters": sum(len(item["text"]) for item in evidence),
-            "method": "deterministic_keyword_and_deduplication_v1",
+            "method": "deterministic_keyword_and_deduplication_v3",
         },
     }
     with connection:
@@ -138,7 +136,7 @@ def compact_snapshot_package(
             """
             INSERT INTO compact_snapshots (
                 root_task_id, schema_version, payload_json, compacted_at
-            ) VALUES (?, 1, ?, ?)
+            ) VALUES (?, 3, ?, ?)
             ON CONFLICT(root_task_id) DO UPDATE SET
                 schema_version = excluded.schema_version,
                 payload_json = excluded.payload_json,
@@ -171,6 +169,7 @@ def _source_candidates(
         return [
             {
                 "source_ref": block.get("element_ref") or f"task:{task_id}:block:{index}",
+                "source_task_id": task_id,
                 "source_type": source_type,
                 "document_type": document_type,
                 "visibility": block.get("visibility", "visible"),
@@ -182,17 +181,40 @@ def _source_candidates(
     return _text_candidates(
         fallback_text, source_type=source_type, document_type=document_type,
         source_prefix=f"task:{task_id}", visibility="visible",
+        source_task_id=task_id,
     )
+
+
+def _relevant_buttons(form: dict) -> list[dict]:
+    """Keep legal controls and submit buttons associated with captured form fields."""
+
+    field_frames = {
+        str(field.get("frame_url"))
+        for fields in form.get("groups", {}).values()
+        for field in fields
+        if field.get("frame_url")
+    }
+    return [
+        button
+        for button in form.get("buttons", [])
+        if button.get("purpose") in {"consent", "privacy", "rules"}
+        or (
+            button.get("button_type") == "submit"
+            and str(button.get("frame_url")) in field_frames
+        )
+    ]
 
 
 def _text_candidates(
     text: str, *, source_type: str, document_type: str,
     source_prefix: str, visibility: str | None,
+    source_task_id: int | None = None,
 ) -> list[dict]:
     parts = [part.strip() for part in re.split(r"\n+|(?<=[.!?])\s+(?=[A-ZÅÄÖ])", text)]
     return [
         {
             "source_ref": f"{source_prefix}:part:{index}",
+            "source_task_id": source_task_id,
             "source_type": source_type,
             "document_type": document_type,
             "visibility": visibility or "visible",

@@ -114,9 +114,18 @@
   )
     .filter(visible).slice(0, MAX_ITEMS).map((element) => {
       const text = clean(element.innerText || element.value || element.getAttribute("aria-label"));
+      const declaredType = clean(element.getAttribute("type"), 50).toLowerCase();
+      const associatedForm = Boolean(element.form || element.closest("form"));
+      const nativeSubmit = associatedForm && (
+        declaredType === "submit"
+        || (element.tagName === "BUTTON" && !declaredType)
+      );
+      const buttonType = nativeSubmit
+        ? "submit"
+        : clean(element.getAttribute("role") || declaredType || "button", 50);
       return {
         element_ref: reference(), frame_url: location.href, text,
-        button_type: clean(element.type || element.getAttribute("role") || "button", 50),
+        button_type: buttonType,
         disabled: Boolean(element.disabled || element.getAttribute("aria-disabled") === "true"),
         purpose: purposeFor(`${text} ${contextFor(element) || ""}`)
       };

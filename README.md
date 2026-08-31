@@ -266,12 +266,37 @@ compacts each entry task, and prints each compact JSON package. The default wait
 limit is 180 seconds and can be changed with `--wait`, for example
 `snapshot-run 4 --wait 300`.
 
+For normal use, run the entire browser-to-LLM workflow with one command. The
+argument is the competition ID from `list`:
+
+```powershell
+giveaway-run 4
+```
+
+The command verifies that Ollama and `qwen3.5:9b` are available, uses an already
+running snapshot server or starts a temporary localhost server, queues Chrome,
+waits for entry and legal-document snapshots, prepares and compacts the data,
+runs the validated local-LLM analysis, stores every stage in SQLite, and prints
+the final analysis. Chrome with the configured extension and the Ollama Windows
+application must be running. The default browser wait is 180 seconds and each
+Ollama request may take up to 1800 seconds (30 minutes). Override them with `--wait` and
+`--llm-timeout` when necessary.
+
+During each Ollama request, the command prints progress every 60 seconds. Linked
+rules and privacy documents are first reduced into separate sourced fact packages.
+Those summaries are cached in SQLite and the final analysis receives the entry-page
+evidence plus the small fact packages instead of full legal-document text. Ollama
+does not expose a reliable completion percentage while generating, so the output
+shows elapsed time and the remaining time before the configured timeout. A repair
+attempt for invalid JSON or invented evidence references is displayed as a separate
+`correction` phase.
+
 ## Local Ollama analysis
 
 Install Ollama separately, start it, and download the default lightweight model:
 
 ```powershell
-ollama pull qwen3.5:4b
+ollama pull qwen3.5:9b
 ```
 
 Analyze a compact package using its entry snapshot task ID:
@@ -286,11 +311,17 @@ Use another installed model or Ollama address when needed:
 llm-analyze 11 --model qwen3.5:9b --ollama http://127.0.0.1:11434
 ```
 
-The model receives only the compact package. It has no browser actions, tools,
-JavaScript or shell access. The Ollama structured-output schema constrains the
-response, Pydantic validates it, and evidence references not present in the
-compact input are rejected. A valid result is saved in SQLite and printed. Show
-the stored result later without running the model again:
+The model receives only captured compact evidence. It has no browser actions,
+tools, JavaScript or shell access. Each linked legal document is summarized on its
+own, and the final model output contains both the requested fixed fields and open
+`additional_findings`, `unresolved_questions`, and `conflicts` sections. Analysis
+schema version 2 distinguishes observed form data from unconfirmed absence, records
+the scope of legal findings, and separates browser verification from content review.
+The Ollama
+structured-output schema constrains every response, Pydantic validates it, and an
+automatic correction request is made if the model invents an evidence reference.
+A valid result is saved in SQLite and printed. Show the stored result later without
+running the model again:
 
 ```powershell
 analysis-show 11

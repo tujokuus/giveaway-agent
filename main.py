@@ -4,10 +4,12 @@ import argparse
 import json
 import sqlite3
 import sys
+import threading
 import time
 from collections.abc import Sequence
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -128,6 +130,33 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum seconds to wait for Chrome snapshots (default: 180).",
     )
 
+    easy_run_parser = subparsers.add_parser(
+        "giveaway-run",
+        help="Run the complete browser, compact, and local-LLM pipeline.",
+    )
+    easy_run_parser.add_argument(
+        "id",
+        type=int,
+        help="Competition database ID from the 'list' command.",
+    )
+    _add_database_argument(easy_run_parser)
+    easy_run_parser.add_argument("--server", default="http://127.0.0.1:8765")
+    easy_run_parser.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN_PATH)
+    easy_run_parser.add_argument("--model", default="qwen3.5:9b")
+    easy_run_parser.add_argument("--ollama", default="http://127.0.0.1:11434")
+    easy_run_parser.add_argument(
+        "--wait",
+        type=float,
+        default=180,
+        help="Maximum seconds to wait for Chrome snapshots (default: 180).",
+    )
+    easy_run_parser.add_argument(
+        "--llm-timeout",
+        type=float,
+        default=1800,
+        help="Maximum seconds for each Ollama request (default: 1800).",
+    )
+
     snapshots_parser = subparsers.add_parser(
         "snapshots",
         help="List Chrome Extension snapshot tasks stored in SQLite.",
@@ -182,9 +211,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     llm_parser.add_argument("id", type=int, help="Entry snapshot task ID.")
     _add_database_argument(llm_parser)
-    llm_parser.add_argument("--model", default="qwen3.5:4b")
+    llm_parser.add_argument("--model", default="qwen3.5:9b")
     llm_parser.add_argument("--ollama", default="http://127.0.0.1:11434")
-    llm_parser.add_argument("--timeout", type=float, default=300)
+    llm_parser.add_argument("--timeout", type=float, default=1800)
 
     analysis_show_parser = subparsers.add_parser(
         "analysis-show",
@@ -241,6 +270,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "snapshot-run":
         return _run_complete_snapshot_pipeline(
             args.database, args.id, args.server, args.token_file, args.wait
+        )
+    if args.command == "giveaway-run":
+        return _run_easy_giveaway_pipeline(
+            args.database,
+            args.id,
+            args.server,
+            args.token_file,
+            args.wait,
+            args.model,
+            args.ollama,
+            args.llm_timeout,
         )
     if args.command == "snapshots":
         return _list_snapshot_tasks(args.database)
@@ -360,6 +400,11 @@ def _run_complete_snapshot_pipeline(
     server: str,
     token_path: Path,
     wait_seconds: float,
+    *,
+    show_compact: bool = True,
+    llm_model: str | None = None,
+    ollama_url: str = "http://127.0.0.1:11434",
+    llm_timeout: float = 1800,
 ) -> int:
     """Run the complete read-only snapshot pipeline using tracked task IDs."""
 
@@ -422,11 +467,142 @@ def _run_complete_snapshot_pipeline(
             return 1
         if _compact_browser_snapshot(database_path, root_task_id) != 0:
             return 1
-        print()
-        print(f"Compact package for snapshot task {root_task_id}:")
-        if _show_compact_snapshot(database_path, root_task_id) != 0:
-            return 1
+        if show_compact:
+            print()
+            print(f"Compact package for snapshot task {root_task_id}:")
+            if _show_compact_snapshot(database_path, root_task_id) != 0:
+                return 1
+        if llm_model is not None:
+            print()
+            print(f"Analyzing snapshot task {root_task_id} with {llm_model}...")
+            if _analyze_compact_snapshot(
+                database_path,
+                root_task_id,
+                llm_model,
+                ollama_url,
+                llm_timeout,
+            ) != 0:
+                return 1
     return 0
+
+
+def _run_easy_giveaway_pipeline(
+    database_path: Path,
+    competition_id: int,
+    server_url: str,
+    token_path: Path,
+    wait_seconds: float,
+    model_name: str,
+    ollama_url: str,
+    llm_timeout: float,
+) -> int:
+    """Run the user-facing one-command pipeline with local services checked."""
+
+    if llm_timeout <= 0:
+        print("Error: LLM timeout must be greater than zero.", file=sys.stderr)
+        return 2
+    try:
+        tags_response = httpx.get(f"{ollama_url.rstrip('/')}/api/tags", timeout=5)
+        tags_response.raise_for_status()
+        installed_models = {
+            item.get("name") for item in tags_response.json().get("models", [])
+        }
+    except (httpx.HTTPError, ValueError, AttributeError) as error:
+        print(
+            f"Ollama is not available at {ollama_url}: {error}",
+            file=sys.stderr,
+        )
+        print("Start Ollama and try again.", file=sys.stderr)
+        return 1
+    if model_name not in installed_models:
+        print(
+            f"Ollama model '{model_name}' is not installed. "
+            f"Run 'ollama pull {model_name}'.",
+            file=sys.stderr,
+        )
+        return 1
+
+    local_server = None
+    server_thread = None
+    try:
+        local_server, server_thread = _ensure_snapshot_server(
+            database_path,
+            server_url,
+            token_path,
+        )
+        return _run_complete_snapshot_pipeline(
+            database_path,
+            competition_id,
+            server_url,
+            token_path,
+            wait_seconds,
+            show_compact=False,
+            llm_model=model_name,
+            ollama_url=ollama_url,
+            llm_timeout=llm_timeout,
+        )
+    except RuntimeError as error:
+        print(f"Pipeline startup failed: {error}", file=sys.stderr)
+        return 1
+    finally:
+        if local_server is not None:
+            local_server.should_exit = True
+        if server_thread is not None:
+            server_thread.join(timeout=10)
+
+
+def _ensure_snapshot_server(
+    database_path: Path,
+    server_url: str,
+    token_path: Path,
+) -> tuple[object | None, threading.Thread | None]:
+    """Use an existing local API or start a temporary one for this command."""
+
+    health_url = f"{server_url.rstrip('/')}/health"
+    try:
+        response = httpx.get(health_url, timeout=2)
+        response.raise_for_status()
+        print(f"Using running snapshot server at {server_url}.")
+        return None, None
+    except httpx.HTTPError:
+        pass
+
+    parsed = urlsplit(server_url)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost"}
+        or parsed.path not in {"", "/"}
+    ):
+        raise RuntimeError(
+            "Automatic server startup is allowed only for a plain localhost HTTP URL."
+        )
+    port = parsed.port or 80
+    token = load_or_create_api_token(token_path)
+    application = create_app(database_path=database_path, api_token=token)
+    import uvicorn
+
+    config = uvicorn.Config(
+        application,
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+        access_log=False,
+    )
+    local_server = uvicorn.Server(config)
+    server_thread = threading.Thread(target=local_server.run, daemon=True)
+    server_thread.start()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            response = httpx.get(health_url, timeout=1)
+            response.raise_for_status()
+            print(f"Started temporary snapshot server at {server_url}.")
+            return local_server, server_thread
+        except httpx.HTTPError:
+            time.sleep(0.2)
+    local_server.should_exit = True
+    server_thread.join(timeout=5)
+    raise RuntimeError(f"Could not start the snapshot server at {server_url}.")
 
 
 def _wait_for_snapshot_tree(
@@ -725,6 +901,21 @@ def _analyze_compact_snapshot(
     if timeout_seconds <= 0:
         print("Error: timeout must be greater than zero.", file=sys.stderr)
         return 2
+
+    def show_progress(phase: str, elapsed: float, remaining: float) -> None:
+        if elapsed == 0:
+            print(
+                f"LLM {phase} started. Timeout limit: "
+                f"{_display_duration(timeout_seconds)}.",
+                flush=True,
+            )
+            return
+        print(
+            f"LLM {phase}: elapsed {_display_duration(elapsed)}, "
+            f"timeout remaining {_display_duration(remaining)}.",
+            flush=True,
+        )
+
     try:
         with closing(connect_database(database_path)) as connection:
             initialize_snapshot_schema(connection)
@@ -734,6 +925,7 @@ def _analyze_compact_snapshot(
                 model_name=model_name,
                 ollama_url=ollama_url,
                 timeout_seconds=timeout_seconds,
+                progress_callback=show_progress,
             )
     except (OSError, sqlite3.Error, RuntimeError, ValueError) as error:
         print(f"LLM analysis failed: {error}", file=sys.stderr)
@@ -741,6 +933,16 @@ def _analyze_compact_snapshot(
     print(f"Validated analysis for snapshot task {task_id} using {model_name}:")
     print(json.dumps(analysis.model_dump(mode="json"), ensure_ascii=False, indent=2))
     return 0
+
+
+def _display_duration(seconds: float) -> str:
+    """Format an elapsed or remaining duration for progress output."""
+
+    total_seconds = max(0, int(seconds))
+    minutes, seconds_part = divmod(total_seconds, 60)
+    if minutes:
+        return f"{minutes} min {seconds_part:02d} s"
+    return f"{seconds_part} s"
 
 
 def _show_llm_analysis(database_path: Path, task_id: int) -> int:

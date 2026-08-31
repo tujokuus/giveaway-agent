@@ -109,6 +109,12 @@ def snapshot_run() -> int:
     return _run("snapshot-run")
 
 
+def giveaway_run() -> int:
+    """Run the complete browser-to-LLM pipeline for one competition."""
+
+    return _run("giveaway-run")
+
+
 def llm_analyze() -> int:
     """Analyze a compact package with local Ollama."""
 
