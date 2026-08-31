@@ -64,20 +64,82 @@ async function openAndCapture(task) {
   await waitForTab(tab.id, 60000);
   // Give client-rendered forms a moment to appear after the load event.
   await new Promise((resolve) => setTimeout(resolve, 2500));
-  await captureTabForTask(tab.id, task);
+  await captureTabForTask(tab.id, task, { openLegalElements: task.document_type === "entry" });
 }
 
-async function captureTabForTask(tabId, task) {
-  const frameResults = await chrome.scripting.executeScript({
+async function readTabFrames(tabId) {
+  return chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
     files: ["content.js"]
   });
-  const snapshot = mergeFrames(task, frameResults);
+}
+
+async function captureTabForTask(tabId, task, { openLegalElements = false } = {}) {
+  const beforeResults = await readTabFrames(tabId);
+  let interactionResults = [];
+  let externalLegalSections = [];
+  let frameResults = beforeResults;
+  if (openLegalElements) {
+    const knownTabs = new Set((await chrome.tabs.query({})).map((tab) => tab.id));
+    try {
+      interactionResults = await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ["legal_interactions.js"]
+      });
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      frameResults = await readTabFrames(tabId);
+      externalLegalSections = await captureOpenedLegalTabs(
+        tabId, knownTabs, interactionResults
+      );
+    } catch (_error) {
+      // Preserve the initial read-only snapshot if a controlled click navigates away.
+      frameResults = beforeResults;
+    }
+  }
+  const snapshot = mergeFrames(
+    task, frameResults, beforeResults, interactionResults, externalLegalSections
+  );
   const response = await apiFetch(`/api/v1/tasks/${task.id}/snapshot`, {
     method: "POST",
     body: JSON.stringify(snapshot)
   });
   if (!response.ok) throw new Error(`Snapshot upload failed: HTTP ${response.status}`);
+}
+
+async function captureOpenedLegalTabs(openerTabId, knownTabs, interactionResults) {
+  const documentTypes = [...new Set(interactionResults.flatMap((frame) =>
+    (frame.result?.interactions || []).map((item) => item.document_type)
+  ))];
+  if (!documentTypes.length) return [];
+  const tabs = (await chrome.tabs.query({})).filter((tab) =>
+    tab.id && !knownTabs.has(tab.id) && tab.openerTabId === openerTabId
+  );
+  const sections = [];
+  for (const tab of tabs.slice(0, 2)) {
+    if (!tab.url?.startsWith("http")) continue;
+    if (tab.status !== "complete") {
+      try {
+        await waitForTab(tab.id, 15000);
+      } catch (_error) {
+        continue;
+      }
+    }
+    try {
+      const results = await readTabFrames(tab.id);
+      const main = results.find((item) => item.frameId === 0)?.result;
+      if (!main?.visible_text) continue;
+      sections.push({
+        element_ref: `external_tab_${tab.id}`,
+        frame_url: main.url,
+        document_types: documentTypes,
+        text: main.visible_text.slice(0, 30000),
+        visibility: "visible"
+      });
+    } catch (_error) {
+      // The original page snapshot remains useful even if a popup cannot be read.
+    }
+  }
+  return sections;
 }
 
 async function captureCurrentTab() {
@@ -110,7 +172,10 @@ function waitForTab(tabId, timeoutMs) {
   });
 }
 
-function mergeFrames(task, executionResults) {
+function mergeFrames(
+  task, executionResults, beforeResults = [], interactionResults = [],
+  externalLegalSections = []
+) {
   const frames = executionResults
     .filter((item) => item.result && item.result.url.startsWith("http"))
     .map((item) => ({ frameId: item.frameId, ...item.result }));
@@ -121,8 +186,26 @@ function mergeFrames(task, executionResults) {
     element_ref: `f${frameId}_${item.element_ref}`
   }));
   const manual = frames.some((frame) => frame.manual_verification_required);
+  const beforeFrames = beforeResults
+    .filter((item) => item.result && item.result.url.startsWith("http"))
+    .map((item) => ({ frameId: item.frameId, ...item.result }));
+  const legalSections = [
+    ...frames.flatMap((frame) => prefixItems(
+      frame.embedded_legal_sections || [], frame.frameId
+    )),
+    ...beforeFrames.flatMap((frame) => prefixItems(
+      frame.embedded_legal_sections || [], frame.frameId
+    )),
+    ...externalLegalSections
+  ].filter((section, index, items) => items.findIndex((candidate) =>
+    candidate.text === section.text
+    && candidate.document_types.join(",") === section.document_types.join(",")
+  ) === index).slice(0, 50);
+  const legalInteractions = interactionResults.flatMap((frame) =>
+    frame.result?.interactions || []
+  ).slice(0, 10);
   return {
-    schema_version: 1,
+    schema_version: 2,
     task_id: task.id,
     requested_url: task.url,
     final_url: main.url,
@@ -135,9 +218,8 @@ function mergeFrames(task, executionResults) {
     links: frames.flatMap((frame) => prefixItems(frame.links, frame.frameId)).slice(0, 2000),
     buttons: frames.flatMap((frame) => prefixItems(frame.buttons, frame.frameId)).slice(0, 1000),
     text_blocks: frames.flatMap((frame) => prefixItems(frame.text_blocks || [], frame.frameId)).slice(0, 2000),
-    embedded_legal_sections: frames.flatMap((frame) =>
-      prefixItems(frame.embedded_legal_sections || [], frame.frameId)
-    ).slice(0, 50),
+    embedded_legal_sections: legalSections,
+    legal_interactions: legalInteractions,
     iframe_urls: [...new Set(frames.flatMap((frame) => frame.iframe_urls))].slice(0, 500)
   };
 }

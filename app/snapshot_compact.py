@@ -32,8 +32,24 @@ TOPICS = {
     "rules": ("käyttöeh", "osallistumiseh", "säänn", "terms", "rules"),
     "privacy": ("tietosuoja", "privacy", "rekisterinpitä"),
 }
-MAX_TOTAL_CHARS = 18_000
-MAX_SOURCE_CHARS = 6_000
+MAX_TOTAL_CHARS = 12_000
+MAX_TOPIC_BLOCKS_PER_DOCUMENT = 3
+SCOPE_CHAR_LIMITS = {
+    "competition_page": 7_000,
+    "competition_specific_rules": 5_000,
+    "competition_privacy_policy": 3_000,
+    "general_service_terms": 1_500,
+    "general_privacy_policy": 1_000,
+    "unknown": 1_500,
+}
+SCOPE_PRIORITIES = {
+    "competition_page": 0,
+    "competition_specific_rules": 1,
+    "competition_privacy_policy": 2,
+    "general_service_terms": 3,
+    "general_privacy_policy": 4,
+    "unknown": 5,
+}
 
 
 def initialize_compact_schema(connection: sqlite3.Connection) -> None:
@@ -55,6 +71,7 @@ def compact_snapshot_package(
         source_type="entry_page",
         document_type="entry",
         task_id=root_task_id,
+        source_scope="competition_page",
         text_blocks=entry.get("text_blocks", []),
         fallback_text=entry.get("visible_text", ""),
     ))
@@ -67,14 +84,23 @@ def compact_snapshot_package(
                 source_prefix=section.get("element_ref") or "embedded",
                 visibility=section.get("visibility"),
                 source_task_id=root_task_id,
+                source_scope=(
+                    "competition_specific_rules"
+                    if document_type == "rules"
+                    else "competition_privacy_policy"
+                ),
             ))
     for document in prepared["legal_documents"]:
         if not document["source_available"]:
             continue
+        document_scope = _document_scope(
+            document["document_type"], document.get("requested_url", "")
+        )
         candidates.extend(_source_candidates(
             source_type="linked_legal_document",
             document_type=document["document_type"],
             task_id=document["task_id"],
+            source_scope=document_scope,
             text_blocks=document.get("text_blocks", []),
             fallback_text=document.get("visible_text", ""),
         ))
@@ -86,12 +112,13 @@ def compact_snapshot_package(
                 source_prefix=section.get("element_ref") or f"task:{document['task_id']}",
                 visibility=section.get("visibility"),
                 source_task_id=document["task_id"],
+                source_scope=document_scope,
             ))
 
     evidence, duplicate_count, omitted_count = _select_evidence(candidates)
     compacted_at = datetime.now(UTC).isoformat()
     package = {
-        "schema_version": 3,
+        "schema_version": 4,
         "source_task_id": root_task_id,
         "competition_id": prepared["competition_id"],
         "compacted_at": compacted_at,
@@ -116,6 +143,9 @@ def compact_snapshot_package(
                 "status": document["status"],
                 "requested_url": document["requested_url"],
                 "source_available": document["source_available"],
+                "scope": _document_scope(
+                    document["document_type"], document.get("requested_url", "")
+                ),
             }
             for document in prepared["legal_documents"]
         ],
@@ -127,7 +157,7 @@ def compact_snapshot_package(
             "duplicates_removed": duplicate_count,
             "relevant_blocks_omitted_by_limits": omitted_count,
             "total_evidence_characters": sum(len(item["text"]) for item in evidence),
-            "method": "deterministic_keyword_and_deduplication_v3",
+            "method": "topic_capped_legal_evidence_v4",
         },
     }
     with connection:
@@ -136,7 +166,7 @@ def compact_snapshot_package(
             """
             INSERT INTO compact_snapshots (
                 root_task_id, schema_version, payload_json, compacted_at
-            ) VALUES (?, 3, ?, ?)
+            ) VALUES (?, 4, ?, ?)
             ON CONFLICT(root_task_id) DO UPDATE SET
                 schema_version = excluded.schema_version,
                 payload_json = excluded.payload_json,
@@ -163,7 +193,7 @@ def load_compact_package(
 
 def _source_candidates(
     *, source_type: str, document_type: str, task_id: int,
-    text_blocks: list[dict], fallback_text: str,
+    source_scope: str, text_blocks: list[dict], fallback_text: str,
 ) -> list[dict]:
     if text_blocks:
         return [
@@ -172,6 +202,7 @@ def _source_candidates(
                 "source_task_id": task_id,
                 "source_type": source_type,
                 "document_type": document_type,
+                "scope": source_scope,
                 "visibility": block.get("visibility", "visible"),
                 "text": block.get("text", ""),
             }
@@ -182,6 +213,7 @@ def _source_candidates(
         fallback_text, source_type=source_type, document_type=document_type,
         source_prefix=f"task:{task_id}", visibility="visible",
         source_task_id=task_id,
+        source_scope=source_scope,
     )
 
 
@@ -209,6 +241,7 @@ def _text_candidates(
     text: str, *, source_type: str, document_type: str,
     source_prefix: str, visibility: str | None,
     source_task_id: int | None = None,
+    source_scope: str = "unknown",
 ) -> list[dict]:
     parts = [part.strip() for part in re.split(r"\n+|(?<=[.!?])\s+(?=[A-ZÅÄÖ])", text)]
     return [
@@ -217,6 +250,7 @@ def _text_candidates(
             "source_task_id": source_task_id,
             "source_type": source_type,
             "document_type": document_type,
+            "scope": source_scope,
             "visibility": visibility or "visible",
             "text": part[:2_000],
         }
@@ -242,23 +276,58 @@ def _select_evidence(candidates: list[dict]) -> tuple[list[dict], int, int]:
             continue
         relevant.append({**candidate, "topics": topics})
 
+    relevant.sort(key=lambda item: SCOPE_PRIORITIES.get(item["scope"], 99))
     included = []
-    source_sizes: dict[str, int] = {}
+    document_sizes: dict[str, int] = {}
+    topic_counts: dict[tuple[str, str], int] = {}
     total = 0
     omitted = 0
     for candidate in relevant:
-        source_key = f"{candidate['source_type']}:{candidate['document_type']}"
-        length = len(candidate["text"])
+        document_key = (
+            f"{candidate.get('source_task_id')}:{candidate['scope']}:"
+            f"{candidate['document_type']}"
+        )
+        available_topics = [
+            topic for topic in candidate["topics"]
+            if topic_counts.get((document_key, topic), 0)
+            < MAX_TOPIC_BLOCKS_PER_DOCUMENT
+        ]
+        if not available_topics:
+            omitted += 1
+            continue
+        block_limit = 1_500 if candidate["scope"] == "competition_page" else 800
+        selected_candidate = {**candidate, "text": candidate["text"][:block_limit]}
+        length = len(selected_candidate["text"])
         if total + length > MAX_TOTAL_CHARS:
             omitted += 1
             continue
-        if source_sizes.get(source_key, 0) + length > MAX_SOURCE_CHARS:
+        document_limit = SCOPE_CHAR_LIMITS.get(candidate["scope"], 1_500)
+        if document_sizes.get(document_key, 0) + length > document_limit:
             omitted += 1
             continue
-        included.append(candidate)
+        included.append(selected_candidate)
         total += length
-        source_sizes[source_key] = source_sizes.get(source_key, 0) + length
+        document_sizes[document_key] = document_sizes.get(document_key, 0) + length
+        for topic in available_topics:
+            topic_counts[(document_key, topic)] = (
+                topic_counts.get((document_key, topic), 0) + 1
+            )
     return included, duplicates, omitted
+
+
+def _document_scope(document_type: str, requested_url: str) -> str:
+    """Classify linked documents conservatively for evidence budgets and LLM use."""
+
+    lowered = requested_url.casefold()
+    if document_type == "rules":
+        if any(marker in lowered for marker in ("palvelun-kayttoehdot", "terms-of-use")):
+            return "general_service_terms"
+        return "competition_specific_rules"
+    if document_type == "privacy":
+        if any(marker in lowered for marker in ("k_ruoka_kilpailut", "competition", "arvonta")):
+            return "competition_privacy_policy"
+        return "general_privacy_policy"
+    return "unknown"
 
 
 def _normalize(text: str) -> str:

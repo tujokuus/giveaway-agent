@@ -122,12 +122,25 @@ class EmbeddedLegalSection(BaseModel):
     visibility: Literal["visible", "hidden"]
 
 
-class BrowserSnapshot(BaseModel):
-    """Validated, untrusted page data captured without form interaction."""
+class SnapshotLegalInteraction(BaseModel):
+    """One predefined attempt to reveal rules or privacy text without form input."""
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1]
+    frame_url: str = Field(max_length=4_000)
+    text: str = Field(max_length=2_000)
+    document_type: Literal["privacy", "rules"]
+    result: Literal[
+        "content_revealed", "clicked_no_readable_change", "click_failed"
+    ]
+
+
+class BrowserSnapshot(BaseModel):
+    """Validated page data captured without filling or submitting a form."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1, 2]
     task_id: int = Field(gt=0)
     requested_url: HttpUrl
     final_url: HttpUrl
@@ -142,6 +155,9 @@ class BrowserSnapshot(BaseModel):
     text_blocks: list[SnapshotTextBlock] = Field(default_factory=list, max_length=2_000)
     embedded_legal_sections: list[EmbeddedLegalSection] = Field(
         default_factory=list, max_length=50
+    )
+    legal_interactions: list[SnapshotLegalInteraction] = Field(
+        default_factory=list, max_length=10
     )
     iframe_urls: list[str] = Field(default_factory=list, max_length=500)
 

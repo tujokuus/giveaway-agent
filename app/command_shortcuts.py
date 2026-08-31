@@ -115,6 +115,18 @@ def giveaway_run() -> int:
     return _run("giveaway-run")
 
 
+def giveaway_run_all() -> int:
+    """Run every competition that has no saved LLM analysis."""
+
+    return _run("giveaway-run-all")
+
+
+def giveaway_run_next() -> int:
+    """Run a requested number of competitions with no saved LLM analysis."""
+
+    return _run("giveaway-run-next")
+
+
 def llm_analyze() -> int:
     """Analyze a compact package with local Ollama."""
 

@@ -148,7 +148,7 @@ python main.py fetch https://example.com --timeout 20
 python -m pytest
 ```
 
-## Read-only Chrome Extension snapshot pipeline
+## Safe Chrome Extension snapshot pipeline
 
 This MVP uses a separate normal Chrome profile instead of Incognito. Chrome
 profiles keep cookies, extensions, history, and settings isolated from the
@@ -205,9 +205,12 @@ controls, consent controls, privacy and rules elements, and manual verification.
 It does not use an LLM and does not interact with the form.
 
 When an entry snapshot contains direct HTTP(S) links classified as privacy or
-rules documents, the backend automatically queues those URLs as related
-read-only tasks. The extension opens and captures them normally. It never clicks
-modal dialogs; a legal element without a URL is retained as unresolved.
+rules documents, the backend automatically queues those URLs as related tasks.
+For rules and privacy controls without a URL, the extension may perform one of
+two predefined disclosure clicks in the main frame. It captures the DOM before
+and after the click and keeps newly revealed legal text or a legal page opened
+by that control. Submit controls, fields and consent controls are never changed.
+An element that reveals no readable text is retained as unresolved.
 
 After the entry page and its queued legal-document tasks have completed, build
 and persist the grouped LLM-ready package:
@@ -245,8 +248,11 @@ compact-show 10
 The compact operation is deterministic and uses no LLM. It removes exact
 normalized duplicates, retains evidence about participation, prizes, deadlines,
 eligibility, phone use, marketing, personal-data use, recipients, retention,
-winner contact, privacy and rules, and applies per-source and total character
-limits. The complete snapshots and prepared package remain unchanged in SQLite.
+winner contact, privacy and rules, and applies topic and document limits. The
+whole package is limited to 12,000 characters; general service terms receive at
+most 1,500 and general privacy policies at most 1,000 characters. Competition-
+specific rules may receive up to 5,000 characters. The complete snapshots and
+prepared package remain unchanged in SQLite.
 The compact package is stored in `compact_snapshots` and is also available at:
 
 ```text
@@ -271,6 +277,29 @@ argument is the competition ID from `list`:
 
 ```powershell
 giveaway-run 4
+```
+
+Run every competition that does not yet have a successfully saved LLM analysis:
+
+```powershell
+giveaway-run-all
+```
+
+Limit the batch to the next five pending competition IDs:
+
+```powershell
+giveaway-run-next 5
+```
+
+Pending competitions are processed sequentially in ascending competition-ID order.
+A competition counts as complete when at least one root snapshot task has a saved
+LLM analysis. Failed or interrupted analyses remain pending. One failed competition
+is reported but does not stop the rest of the selected batch. Both batch commands
+accept the same `--model`, `--wait`, and `--llm-timeout` options as `giveaway-run`.
+For example:
+
+```powershell
+giveaway-run-next 10 --llm-timeout 3600
 ```
 
 The command verifies that Ollama and `qwen3.5:9b` are available, uses an already
@@ -312,8 +341,14 @@ llm-analyze 11 --model qwen3.5:9b --ollama http://127.0.0.1:11434
 ```
 
 The model receives only captured compact evidence. It has no browser actions,
-tools, JavaScript or shell access. Each linked legal document is summarized on its
-own, and the final model output contains both the requested fixed fields and open
+tools, JavaScript or shell access. Competition pages and competition-specific
+rules are prioritized. General privacy policies and service terms are retained
+as capped evidence but are not separately summarized by the LLM. A privacy
+document is also skipped when the competition page or its specific rules already
+state an explicit phone-number purpose. A legal-document timeout is recorded for
+manual review instead of stopping the whole competition analysis. The compact
+package has a 12,000-character total limit and additional per-document and
+per-topic limits. The final model output contains both the requested fixed fields and open
 `additional_findings`, `unresolved_questions`, and `conflicts` sections. Analysis
 schema version 2 distinguishes observed form data from unconfirmed absence, records
 the scope of legal findings, and separates browser verification from content review.
@@ -333,10 +368,10 @@ The stored analysis is also available from the authenticated local API:
 GET /api/v1/tasks/{entry_task_id}/analysis
 ```
 
-For a legal modal whose content appears only after interaction, open the modal
+The automatic capture tries predefined rules and privacy disclosure controls in
+the main frame. If a site uses an unsupported control, open the legal content
 yourself in the tab originally opened by Giveaway Agent. Click the extension
-icon and choose **Capture current tab**. The extension reads the now-visible DOM
-and stores a new snapshot for the same task; it does not open the modal itself.
+icon and choose **Capture current tab** to store the now-visible DOM.
 
 The extension polls the API, opens the queued URL in a normal tab, reads the
 visible DOM in every permitted frame, and stores a validated JSON snapshot in
@@ -348,6 +383,7 @@ A later local analysis agent can read a stored snapshot through the authenticate
 endpoint `GET /api/v1/tasks/{task_id}/snapshot`. Returned page content remains
 untrusted data and must never be treated as agent instructions.
 
-The extension contains no clicking, filling, selecting, checking, JavaScript
-evaluation requested by a model, or form submission features. CAPTCHA and
-Cloudflare pages are marked `manual_verification_required` for the user.
+The extension only performs predefined legal-disclosure clicks. It contains no
+model-requested arbitrary JavaScript, filling, selecting, checking or form
+submission features. CAPTCHA and Cloudflare pages are marked
+`manual_verification_required` for the user.

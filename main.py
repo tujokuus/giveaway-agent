@@ -157,6 +157,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum seconds for each Ollama request (default: 1800).",
     )
 
+    run_all_parser = subparsers.add_parser(
+        "giveaway-run-all",
+        help="Analyze every competition that has no saved LLM analysis.",
+    )
+    _add_batch_run_arguments(run_all_parser)
+
+    run_next_parser = subparsers.add_parser(
+        "giveaway-run-next",
+        help="Analyze a limited number of competitions with no saved LLM analysis.",
+    )
+    run_next_parser.add_argument(
+        "count",
+        type=int,
+        help="Maximum number of pending competitions to analyze.",
+    )
+    _add_batch_run_arguments(run_next_parser)
+
     snapshots_parser = subparsers.add_parser(
         "snapshots",
         help="List Chrome Extension snapshot tasks stored in SQLite.",
@@ -236,6 +253,28 @@ def _add_database_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_batch_run_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add shared browser and Ollama options to pending batch commands."""
+
+    _add_database_argument(parser)
+    parser.add_argument("--server", default="http://127.0.0.1:8765")
+    parser.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN_PATH)
+    parser.add_argument("--model", default="qwen3.5:9b")
+    parser.add_argument("--ollama", default="http://127.0.0.1:11434")
+    parser.add_argument(
+        "--wait",
+        type=float,
+        default=180,
+        help="Maximum seconds to wait for each Chrome snapshot tree (default: 180).",
+    )
+    parser.add_argument(
+        "--llm-timeout",
+        type=float,
+        default=1800,
+        help="Maximum seconds for each Ollama request (default: 1800).",
+    )
+
+
 def _add_timeout_argument(parser: argparse.ArgumentParser) -> None:
     """Add the shared request timeout option to a subcommand."""
 
@@ -275,6 +314,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_easy_giveaway_pipeline(
             args.database,
             args.id,
+            args.server,
+            args.token_file,
+            args.wait,
+            args.model,
+            args.ollama,
+            args.llm_timeout,
+        )
+    if args.command in {"giveaway-run-all", "giveaway-run-next"}:
+        return _run_pending_giveaway_batch(
+            args.database,
+            None if args.command == "giveaway-run-all" else args.count,
             args.server,
             args.token_file,
             args.wait,
@@ -498,29 +548,9 @@ def _run_easy_giveaway_pipeline(
 ) -> int:
     """Run the user-facing one-command pipeline with local services checked."""
 
-    if llm_timeout <= 0:
-        print("Error: LLM timeout must be greater than zero.", file=sys.stderr)
-        return 2
-    try:
-        tags_response = httpx.get(f"{ollama_url.rstrip('/')}/api/tags", timeout=5)
-        tags_response.raise_for_status()
-        installed_models = {
-            item.get("name") for item in tags_response.json().get("models", [])
-        }
-    except (httpx.HTTPError, ValueError, AttributeError) as error:
-        print(
-            f"Ollama is not available at {ollama_url}: {error}",
-            file=sys.stderr,
-        )
-        print("Start Ollama and try again.", file=sys.stderr)
-        return 1
-    if model_name not in installed_models:
-        print(
-            f"Ollama model '{model_name}' is not installed. "
-            f"Run 'ollama pull {model_name}'.",
-            file=sys.stderr,
-        )
-        return 1
+    validation = _validate_ollama_model(model_name, ollama_url, llm_timeout)
+    if validation != 0:
+        return validation
 
     local_server = None
     server_thread = None
@@ -549,6 +579,154 @@ def _run_easy_giveaway_pipeline(
             local_server.should_exit = True
         if server_thread is not None:
             server_thread.join(timeout=10)
+
+
+def _run_pending_giveaway_batch(
+    database_path: Path,
+    limit: int | None,
+    server_url: str,
+    token_path: Path,
+    wait_seconds: float,
+    model_name: str,
+    ollama_url: str,
+    llm_timeout: float,
+) -> int:
+    """Run pending competitions sequentially while allowing individual failures."""
+
+    if limit is not None and limit <= 0:
+        print("Error: count must be greater than zero.", file=sys.stderr)
+        return 2
+    if wait_seconds <= 0:
+        print("Error: wait time must be greater than zero.", file=sys.stderr)
+        return 2
+    try:
+        with closing(connect_database(database_path)) as connection:
+            initialize_database(connection)
+            initialize_snapshot_schema(connection)
+            rows = connection.execute(
+                """
+                SELECT c.id, c.title
+                FROM competitions AS c
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM extension_tasks AS task
+                    JOIN llm_analyses AS analysis
+                      ON analysis.root_task_id = task.id
+                    WHERE task.competition_id = c.id
+                      AND task.parent_task_id IS NULL
+                )
+                ORDER BY c.id
+                """
+            ).fetchall()
+    except (OSError, sqlite3.Error) as error:
+        print(f"Pending competition lookup failed: {error}", file=sys.stderr)
+        return 1
+
+    selected = rows if limit is None else rows[:limit]
+    if not selected:
+        print("No pending competitions found. Every competition has a saved analysis.")
+        return 0
+
+    print(
+        f"Pending competitions selected: {len(selected)}"
+        + (f" of {len(rows)}" if limit is not None else "")
+    )
+    for row in selected:
+        print(f"  {row['id']}: {_truncate(row['title'], 90)}")
+
+    validation = _validate_ollama_model(model_name, ollama_url, llm_timeout)
+    if validation != 0:
+        return validation
+
+    local_server = None
+    server_thread = None
+    succeeded = []
+    failed = []
+    try:
+        local_server, server_thread = _ensure_snapshot_server(
+            database_path,
+            server_url,
+            token_path,
+        )
+        total = len(selected)
+        for position, row in enumerate(selected, start=1):
+            competition_id = int(row["id"])
+            print()
+            print("=" * 72)
+            print(
+                f"Pending giveaway {position}/{total}: "
+                f"competition {competition_id} - {row['title']}"
+            )
+            print("=" * 72)
+            result = _run_complete_snapshot_pipeline(
+                database_path,
+                competition_id,
+                server_url,
+                token_path,
+                wait_seconds,
+                show_compact=False,
+                llm_model=model_name,
+                ollama_url=ollama_url,
+                llm_timeout=llm_timeout,
+            )
+            if result == 0:
+                succeeded.append(competition_id)
+                print(f"Competition {competition_id} completed successfully.")
+            else:
+                failed.append(competition_id)
+                print(
+                    f"Competition {competition_id} failed; continuing with the next one.",
+                    file=sys.stderr,
+                )
+    except RuntimeError as error:
+        print(f"Batch startup failed: {error}", file=sys.stderr)
+        return 1
+    finally:
+        if local_server is not None:
+            local_server.should_exit = True
+        if server_thread is not None:
+            server_thread.join(timeout=10)
+
+    print()
+    print("Batch complete.")
+    print(f"Successful: {len(succeeded)}")
+    print(f"Failed: {len(failed)}")
+    if failed:
+        print("Failed competition IDs: " + ", ".join(map(str, failed)))
+    return 1 if failed else 0
+
+
+def _validate_ollama_model(
+    model_name: str,
+    ollama_url: str,
+    llm_timeout: float,
+) -> int:
+    """Check one batch or single run's Ollama configuration once."""
+
+    if llm_timeout <= 0:
+        print("Error: LLM timeout must be greater than zero.", file=sys.stderr)
+        return 2
+    try:
+        tags_response = httpx.get(f"{ollama_url.rstrip('/')}/api/tags", timeout=5)
+        tags_response.raise_for_status()
+        installed_models = {
+            item.get("name") for item in tags_response.json().get("models", [])
+        }
+    except (httpx.HTTPError, ValueError, AttributeError) as error:
+        print(
+            f"Ollama is not available at {ollama_url}: {error}",
+            file=sys.stderr,
+        )
+        print("Start Ollama and try again.", file=sys.stderr)
+        return 1
+    if model_name not in installed_models:
+        print(
+            f"Ollama model '{model_name}' is not installed. "
+            f"Run 'ollama pull {model_name}'.",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
 
 
 def _ensure_snapshot_server(

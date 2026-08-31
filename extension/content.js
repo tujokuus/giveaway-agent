@@ -146,9 +146,22 @@
   }).filter(Boolean).slice(0, 2000);
 
   const hiddenSeen = new Set();
-  const embeddedLegalSections = queryDeep(
-    "dialog, [role=dialog], template, [hidden], [aria-hidden=true]"
-  ).map((element) => {
+  const controlledLegalSections = queryDeep("[aria-controls]").flatMap((controller) => {
+    const controllerText = clean(
+      controller.innerText || controller.value || controller.getAttribute("aria-label")
+    );
+    if (!["rules", "privacy"].includes(purposeFor(controllerText))) return [];
+    const root = controller.getRootNode();
+    return (controller.getAttribute("aria-controls") || "").split(/\s+/)
+      .filter(Boolean)
+      .map((id) => root.querySelector?.(`#${CSS.escape(id)}`))
+      .filter(Boolean);
+  });
+  const legalSectionElements = [...new Set([
+    ...queryDeep("dialog, [role=dialog], template, details, [hidden], [aria-hidden=true]"),
+    ...controlledLegalSections
+  ])];
+  const embeddedLegalSections = legalSectionElements.map((element) => {
     const rawText = element.tagName === "TEMPLATE"
       ? element.content?.textContent : element.textContent;
     const text = cleanMultiline(rawText, 30000);
@@ -156,9 +169,12 @@
     const key = text.toLowerCase();
     if (text.length < 40 || !documentTypes.length || hiddenSeen.has(key)) return null;
     hiddenSeen.add(key);
+    const isVisible = element.tagName === "DETAILS"
+      ? Boolean(element.open) && visible(element)
+      : visible(element);
     return {
       element_ref: reference(), frame_url: location.href,
-      document_types: documentTypes, text, visibility: visible(element) ? "visible" : "hidden"
+      document_types: documentTypes, text, visibility: isVisible ? "visible" : "hidden"
     };
   }).filter(Boolean).slice(0, 50);
 

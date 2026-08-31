@@ -89,15 +89,26 @@ def prepare_snapshot_package(
             "options": field.get("options", []),
         })
 
+    captured_inline_types = {
+        document_type
+        for section in root_snapshot.get("embedded_legal_sections", [])
+        if section.get("text")
+        for document_type in section.get("document_types", [])
+    }
     unresolved = []
     for item_type in ("links", "buttons"):
         for item in root_snapshot.get(item_type, []):
-            if item.get("purpose") in {"privacy", "rules"} and not item.get("url"):
+            purpose = item.get("purpose")
+            if (
+                purpose in {"privacy", "rules"}
+                and not item.get("url")
+                and purpose not in captured_inline_types
+            ):
                 unresolved.append({
-                    "document_type": item["purpose"],
+                    "document_type": purpose,
                     "source_ref": item.get("element_ref"),
                     "text": item.get("text"),
-                    "reason": "No readable URL; interactive content was not opened.",
+                    "reason": "No readable URL and controlled interaction revealed no legal text.",
                 })
     for field in fields:
         field_text = f"{field.get('label', '')} {field.get('context', '')}".lower()
@@ -124,9 +135,18 @@ def prepare_snapshot_package(
         warnings.append("Field requiredness could not be confirmed from markup.")
     if root_snapshot.get("manual_verification_required"):
         warnings.append("The entry page requires manual verification.")
+    failed_interactions = [
+        item for item in root_snapshot.get("legal_interactions", [])
+        if item.get("result") != "content_revealed"
+        and item.get("document_type") not in captured_inline_types
+    ]
+    if failed_interactions:
+        warnings.append(
+            f"{len(failed_interactions)} controlled legal interaction(s) revealed no readable text."
+        )
 
     package = {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_task_id": root_task_id,
         "competition_id": root_task["competition_id"],
         "prepared_at": datetime.now(UTC).isoformat(),
@@ -143,6 +163,7 @@ def prepare_snapshot_package(
             "embedded_legal_sections": root_snapshot.get(
                 "embedded_legal_sections", []
             ),
+            "legal_interactions": root_snapshot.get("legal_interactions", []),
             "manual_verification_required": bool(
                 root_snapshot.get("manual_verification_required")
             ),
@@ -164,7 +185,7 @@ def prepare_snapshot_package(
             """
             INSERT INTO prepared_snapshots (
                 root_task_id, schema_version, payload_json, prepared_at
-            ) VALUES (?, 1, ?, ?)
+            ) VALUES (?, 2, ?, ?)
             ON CONFLICT(root_task_id) DO UPDATE SET
                 schema_version = excluded.schema_version,
                 payload_json = excluded.payload_json,
