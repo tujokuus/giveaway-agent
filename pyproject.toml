@@ -46,6 +46,8 @@ giveaway-run-next = "app.command_shortcuts:giveaway_run_next"
 llm-analyze = "app.command_shortcuts:llm_analyze"
 analysis-show = "app.command_shortcuts:analysis_show"
 summary-show = "app.command_shortcuts:summary_show"
+giveaway-ask = "app.command_shortcuts:giveaway_ask"
+giveaway-chat = "app.command_shortcuts:giveaway_chat"
 giveaway-help = "app.command_shortcuts:show_help"
 
 [tool.pytest.ini_options]

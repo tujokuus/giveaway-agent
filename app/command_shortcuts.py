@@ -145,5 +145,17 @@ def summary_show() -> int:
     return _run("summary-show")
 
 
+def giveaway_ask() -> int:
+    """Ask one question about analyzed giveaways."""
+
+    return _run("giveaway-ask")
+
+
+def giveaway_chat() -> int:
+    """Open an interactive chat about analyzed giveaways."""
+
+    return _run("giveaway-chat")
+
+
 def show_help() -> int:
     return _run("help")

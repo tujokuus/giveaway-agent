@@ -265,6 +265,7 @@ class SummaryPhone(BaseModel):
 
     requested_on_form: TruthValue
     required: RequiredStatus
+    phone_needed_to_enter: TruthValue
     uses: list[PhoneUse] = Field(default_factory=list, max_length=8)
     explanation: str = Field(max_length=1_500)
     evidence_refs: list[str] = Field(default_factory=list, max_length=20)
@@ -300,7 +301,7 @@ class GiveawaySummary(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1]
+    schema_version: Literal[2]
     source_task_id: int = Field(gt=0)
     title: Finding
     organizer: Finding
@@ -421,8 +422,12 @@ def analyze_compact_package(
                 "connects it to this competition. Return empty form_fields and consents arrays; "
                 "captured controls are copied deterministically after analysis. Legal source "
                 "statuses are also set deterministically. Keep only the requested core giveaway "
-                "facts, explicit phone uses, missing information, and important warnings. Set "
-                "schema_version to 1. Keep text concise and cite only supplied source_ref values."
+                "facts, explicit phone uses, missing information, and important warnings. "
+                "Set phone use channels to phone and/or sms whenever the evidence names "
+                "those channels. phone_needed_to_enter is yes only when a phone field is "
+                "confirmed required, no when it is optional or not requested, otherwise "
+                "unknown. Set schema_version to 2. Keep text concise and cite only supplied "
+                "source_ref values."
             ),
             user_instruction=(
                 "Create the lightweight giveaway summary from this reduced package. "
@@ -464,7 +469,7 @@ def analyze_compact_package(
             """
             INSERT INTO giveaway_summaries (
                 root_task_id, schema_version, model_name, payload_json, analyzed_at
-            ) VALUES (?, 1, ?, ?, ?)
+            ) VALUES (?, 2, ?, ?, ?)
             ON CONFLICT(root_task_id) DO UPDATE SET
                 schema_version = excluded.schema_version,
                 model_name = excluded.model_name,
@@ -921,7 +926,7 @@ def _apply_deterministic_summary(
         elif statuses == {"optional"}:
             phone_required = "optional"
 
-    phone_uses = list(summary.phone.uses)
+    phone_uses = [_normalize_phone_use(use) for use in summary.phone.uses]
     for consent in consents:
         contact_channels = [
             channel for channel in consent.channels if channel in {"phone", "sms"}
@@ -940,9 +945,15 @@ def _apply_deterministic_summary(
         *[ref for field in phone_fields for ref in field.evidence_refs],
         *[ref for use in phone_uses for ref in use.evidence_refs],
     ]))
+    phone_needed_to_enter: TruthValue = (
+        "yes" if phone_required == "required"
+        else "no" if requested_phone == "no" or phone_required == "optional"
+        else "unknown"
+    )
     phone = summary.phone.model_copy(update={
         "requested_on_form": requested_phone,
         "required": phone_required,
+        "phone_needed_to_enter": phone_needed_to_enter,
         "uses": phone_uses,
         "evidence_refs": phone_refs,
     })
@@ -1175,7 +1186,55 @@ def load_giveaway_summary(
     ).fetchone()
     if row is None:
         return None
-    return GiveawaySummary.model_validate_json(row["payload_json"])
+    payload = json.loads(row["payload_json"])
+    return GiveawaySummary.model_validate(_upgrade_summary_payload(payload))
+
+
+def _upgrade_summary_payload(payload: dict) -> dict:
+    """Upgrade stored lightweight summaries and normalize phone channels."""
+
+    upgraded = dict(payload)
+    phone = dict(upgraded.get("phone") or {})
+    requested = phone.get("requested_on_form", "unknown")
+    required = phone.get("required", "unknown")
+    phone.setdefault(
+        "phone_needed_to_enter",
+        "yes" if required == "required"
+        else "no" if requested == "no" or required == "optional"
+        else "unknown",
+    )
+    phone["uses"] = [
+        _normalized_phone_use_payload(dict(item))
+        for item in phone.get("uses", [])
+        if isinstance(item, dict)
+    ]
+    upgraded["phone"] = phone
+    upgraded["schema_version"] = 2
+    return upgraded
+
+
+def _normalize_phone_use(use: PhoneUse) -> PhoneUse:
+    """Fill channel enums from an evidenced phone-use description."""
+
+    normalized = _normalized_phone_use_payload(use.model_dump(mode="json"))
+    return PhoneUse.model_validate(normalized)
+
+
+def _normalized_phone_use_payload(payload: dict) -> dict:
+    channels = list(payload.get("channels") or [])
+    description = str(payload.get("description") or "").casefold()
+    if any(marker in description for marker in (
+        "puhel", "soitta", "phone", "telephone", " call", "calling",
+    )) and "phone" not in channels:
+        channels.append("phone")
+    if any(marker in description for marker in (
+        "sms", "tekstiviest", "text message",
+    )) and "sms" not in channels:
+        channels.append("sms")
+    payload["channels"] = [
+        channel for channel in ("phone", "sms") if channel in channels
+    ]
+    return payload
 
 
 def load_llm_analysis(

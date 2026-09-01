@@ -338,6 +338,27 @@ Ollama request may take up to 1800 seconds (30 minutes). Override them with `--w
 
 During each Ollama request, the command prints progress every 60 seconds. Linked
 rules and privacy documents are first reduced into separate sourced fact packages.
+
+Ask a single question over the newest successful summary for every competition:
+
+```powershell
+giveaway-ask "Kuinka monessa arvonnassa puhelinnumero on pakollinen?"
+```
+
+Open an interactive local chat:
+
+```powershell
+giveaway-chat
+```
+
+Phone count questions use fixed Python queries and do not require Ollama. More
+open-ended questions, such as prize comparisons, send only the validated lightweight
+summaries to Ollama. The model cannot generate or execute SQL, browser actions,
+JavaScript or shell commands. Chat uses the latest successful result per
+competition, so old forced-run history is not counted twice. Lightweight summary
+schema version 2 adds `phone_needed_to_enter` and normalizes explicit phone and SMS
+channels. Stored schema-version-1 summaries remain readable through an automatic
+in-memory upgrade.
 Those summaries are cached in SQLite and the final analysis receives the entry-page
 evidence plus the small fact packages instead of full legal-document text. Ollama
 does not expose a reliable completion percentage while generating, so the output

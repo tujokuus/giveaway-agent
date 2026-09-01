@@ -41,6 +41,7 @@ from app.llm_analysis import (
     load_giveaway_summary,
     load_llm_analysis,
 )
+from app.giveaway_chat import ChatAnswer, answer_giveaway_question
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -250,6 +251,19 @@ def build_parser() -> argparse.ArgumentParser:
     summary_show_parser.add_argument("id", type=int, help="Entry snapshot task ID.")
     _add_database_argument(summary_show_parser)
 
+    ask_parser = subparsers.add_parser(
+        "giveaway-ask",
+        help="Ask one question about the newest analyzed giveaways.",
+    )
+    ask_parser.add_argument("question", nargs="+", help="Question to answer.")
+    _add_chat_arguments(ask_parser)
+
+    chat_parser = subparsers.add_parser(
+        "giveaway-chat",
+        help="Open an interactive chat over the newest analyzed giveaways.",
+    )
+    _add_chat_arguments(chat_parser)
+
     return parser
 
 
@@ -291,6 +305,20 @@ def _add_batch_run_arguments(parser: argparse.ArgumentParser) -> None:
         type=float,
         default=1800,
         help="Maximum seconds for each Ollama request (default: 1800).",
+    )
+
+
+def _add_chat_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add safe local-summary chat options."""
+
+    _add_database_argument(parser)
+    parser.add_argument("--model", default="qwen3.5:9b")
+    parser.add_argument("--ollama", default="http://127.0.0.1:11434")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=1800,
+        help="Maximum seconds for an Ollama-backed question (default: 1800).",
     )
 
 
@@ -374,6 +402,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _show_llm_analysis(args.database, args.id)
     if args.command == "summary-show":
         return _show_giveaway_summary(args.database, args.id)
+    if args.command == "giveaway-ask":
+        return _ask_giveaway_question(
+            args.database,
+            " ".join(args.question),
+            args.model,
+            args.ollama,
+            args.timeout,
+        )
+    if args.command == "giveaway-chat":
+        return _run_giveaway_chat(
+            args.database, args.model, args.ollama, args.timeout
+        )
 
     if args.timeout <= 0:
         print("Error: timeout must be greater than zero.", file=sys.stderr)
@@ -1202,6 +1242,103 @@ def _show_giveaway_summary(database_path: Path, task_id: int) -> int:
         return 1
     print(json.dumps(summary.model_dump(mode="json"), ensure_ascii=False, indent=2))
     return 0
+
+
+def _ask_giveaway_question(
+    database_path: Path,
+    question: str,
+    model_name: str,
+    ollama_url: str,
+    timeout_seconds: float,
+    *,
+    history: list[dict[str, str]] | None = None,
+) -> int:
+    """Answer one safe question over the latest stored summaries."""
+
+    if timeout_seconds <= 0:
+        print("Error: timeout must be greater than zero.", file=sys.stderr)
+        return 2
+
+    def show_progress(phase: str, elapsed: float, remaining: float) -> None:
+        if elapsed == 0:
+            print(
+                f"LLM {phase} started. Timeout limit: "
+                f"{_display_duration(timeout_seconds)}.",
+                flush=True,
+            )
+        else:
+            print(
+                f"LLM {phase}: elapsed {_display_duration(elapsed)}, "
+                f"timeout remaining {_display_duration(remaining)}.",
+                flush=True,
+            )
+
+    try:
+        with closing(connect_database(database_path)) as connection:
+            answer = answer_giveaway_question(
+                connection,
+                question,
+                model_name=model_name,
+                ollama_url=ollama_url,
+                timeout_seconds=timeout_seconds,
+                history=history,
+                progress_callback=show_progress,
+            )
+    except (OSError, sqlite3.Error, httpx.HTTPError, RuntimeError, ValueError) as error:
+        print(f"Giveaway question failed: {error}", file=sys.stderr)
+        return 1
+    _print_chat_answer(answer)
+    if history is not None:
+        history.extend([
+            {"role": "user", "content": question},
+            {"role": "assistant", "content": answer.answer},
+        ])
+    return 0
+
+
+def _run_giveaway_chat(
+    database_path: Path,
+    model_name: str,
+    ollama_url: str,
+    timeout_seconds: float,
+) -> int:
+    """Run an in-memory interactive conversation over stored summaries."""
+
+    print("Giveaway chat reads the newest successful summary per competition.")
+    print("Type 'exit' or 'quit' to stop.")
+    history: list[dict[str, str]] = []
+    while True:
+        try:
+            question = input("You> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if question.casefold() in {"exit", "quit", "lopeta"}:
+            return 0
+        if not question:
+            continue
+        result = _ask_giveaway_question(
+            database_path,
+            question,
+            model_name,
+            ollama_url,
+            timeout_seconds,
+            history=history,
+        )
+        if result != 0:
+            print("You can ask another question or type 'exit'.")
+
+
+def _print_chat_answer(answer: ChatAnswer) -> None:
+    print(f"Agent> {answer.answer}")
+    if answer.competition_ids:
+        print("Competition IDs: " + ", ".join(map(str, answer.competition_ids)))
+    print(
+        f"Coverage: {answer.analyzed_competitions}/"
+        f"{answer.total_competitions} competitions analyzed."
+    )
+    for caveat in answer.caveats:
+        print(f"Note: {caveat}")
 
 
 def _discover_and_save(page: FetchedPage, database_path: Path) -> int:
