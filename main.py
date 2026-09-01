@@ -268,6 +268,14 @@ def _add_batch_run_arguments(parser: argparse.ArgumentParser) -> None:
     """Add shared browser and Ollama options to pending batch commands."""
 
     _add_database_argument(parser)
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Run selected competitions again even when they already have a saved "
+            "summary. Existing snapshots and analyses are preserved."
+        ),
+    )
     parser.add_argument("--server", default="http://127.0.0.1:8765")
     parser.add_argument("--token-file", type=Path, default=DEFAULT_TOKEN_PATH)
     parser.add_argument("--model", default="qwen3.5:9b")
@@ -336,6 +344,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_pending_giveaway_batch(
             args.database,
             None if args.command == "giveaway-run-all" else args.count,
+            args.force,
             args.server,
             args.token_file,
             args.wait,
@@ -597,6 +606,7 @@ def _run_easy_giveaway_pipeline(
 def _run_pending_giveaway_batch(
     database_path: Path,
     limit: int | None,
+    force: bool,
     server_url: str,
     token_path: Path,
     wait_seconds: float,
@@ -604,7 +614,7 @@ def _run_pending_giveaway_batch(
     ollama_url: str,
     llm_timeout: float,
 ) -> int:
-    """Run pending competitions sequentially while allowing individual failures."""
+    """Run pending or forcibly selected competitions sequentially."""
 
     if limit is not None and limit <= 0:
         print("Error: count must be greater than zero.", file=sys.stderr)
@@ -616,32 +626,45 @@ def _run_pending_giveaway_batch(
         with closing(connect_database(database_path)) as connection:
             initialize_database(connection)
             initialize_snapshot_schema(connection)
-            rows = connection.execute(
-                """
-                SELECT c.id, c.title
-                FROM competitions AS c
-                WHERE NOT EXISTS (
-                    SELECT 1
-                    FROM extension_tasks AS task
-                    JOIN giveaway_summaries AS summary
-                      ON summary.root_task_id = task.id
-                    WHERE task.competition_id = c.id
-                      AND task.parent_task_id IS NULL
-                )
-                ORDER BY c.id
-                """
-            ).fetchall()
+            if force:
+                rows = connection.execute(
+                    """
+                    SELECT c.id, c.title
+                    FROM competitions AS c
+                    ORDER BY c.id
+                    """
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT c.id, c.title
+                    FROM competitions AS c
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM extension_tasks AS task
+                        JOIN giveaway_summaries AS summary
+                          ON summary.root_task_id = task.id
+                        WHERE task.competition_id = c.id
+                          AND task.parent_task_id IS NULL
+                    )
+                    ORDER BY c.id
+                    """
+                ).fetchall()
     except (OSError, sqlite3.Error) as error:
         print(f"Pending competition lookup failed: {error}", file=sys.stderr)
         return 1
 
     selected = rows if limit is None else rows[:limit]
     if not selected:
-        print("No pending competitions found. Every competition has a saved summary.")
+        if force:
+            print("No competitions found in the database.")
+        else:
+            print("No pending competitions found. Every competition has a saved summary.")
         return 0
 
+    selection_name = "Forced competitions" if force else "Pending competitions"
     print(
-        f"Pending competitions selected: {len(selected)}"
+        f"{selection_name} selected: {len(selected)}"
         + (f" of {len(rows)}" if limit is not None else "")
     )
     for row in selected:
@@ -666,8 +689,9 @@ def _run_pending_giveaway_batch(
             competition_id = int(row["id"])
             print()
             print("=" * 72)
+            run_label = "Forced rerun" if force else "Pending giveaway"
             print(
-                f"Pending giveaway {position}/{total}: "
+                f"{run_label} {position}/{total}: "
                 f"competition {competition_id} - {row['title']}"
             )
             print("=" * 72)

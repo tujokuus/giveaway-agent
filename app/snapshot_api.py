@@ -127,16 +127,22 @@ class EmbeddedLegalSection(BaseModel):
 
 
 class SnapshotLegalInteraction(BaseModel):
-    """One predefined attempt to reveal rules or privacy text without form input."""
+    """One scored, predefined attempt to reveal legal or consent details."""
 
     model_config = ConfigDict(extra="forbid")
 
+    element_ref: str = Field(default="legacy_interaction", max_length=100)
     frame_url: str = Field(max_length=4_000)
     text: str = Field(max_length=2_000)
-    document_type: Literal["privacy", "rules"]
+    document_type: Literal["privacy", "rules", "consent"]
+    score: int = Field(default=0, ge=0, le=1_000)
+    trigger_type: str = Field(default="legacy", max_length=100)
+    inside_label: bool = False
     result: Literal[
-        "content_revealed", "clicked_no_readable_change", "click_failed"
+        "content_revealed", "clicked_no_readable_change", "click_failed",
+        "form_state_changed",
     ]
+    revealed_text: str = Field(default="", max_length=30_000)
 
 
 class BrowserSnapshot(BaseModel):
@@ -144,7 +150,7 @@ class BrowserSnapshot(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal[1, 2]
+    schema_version: Literal[1, 2, 3]
     task_id: int = Field(gt=0)
     requested_url: HttpUrl
     final_url: HttpUrl

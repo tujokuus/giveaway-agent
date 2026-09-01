@@ -96,6 +96,12 @@ def prepare_snapshot_package(
         if section.get("text")
         for document_type in section.get("document_types", [])
     }
+    captured_inline_types.update(
+        item.get("document_type")
+        for item in root_snapshot.get("legal_interactions", [])
+        if item.get("revealed_text")
+        and item.get("document_type") in {"privacy", "rules"}
+    )
     unresolved = []
     for item_type in ("links", "buttons"):
         for item in root_snapshot.get(item_type, []):
@@ -142,12 +148,21 @@ def prepare_snapshot_package(
         warnings.append("The entry page requires manual verification.")
     failed_interactions = [
         item for item in root_snapshot.get("legal_interactions", [])
-        if item.get("result") != "content_revealed"
-        and item.get("document_type") not in captured_inline_types
+        if not item.get("revealed_text")
+        and item.get("result") != "content_revealed"
     ]
     if failed_interactions:
         warnings.append(
             f"{len(failed_interactions)} controlled legal interaction(s) revealed no readable text."
+        )
+    unsafe_interactions = [
+        item for item in root_snapshot.get("legal_interactions", [])
+        if item.get("result") == "form_state_changed"
+    ]
+    if unsafe_interactions:
+        warnings.append(
+            f"{len(unsafe_interactions)} disclosure interaction(s) attempted to change "
+            "form state; the original DOM values were restored."
         )
 
     package = {

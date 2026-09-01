@@ -397,7 +397,7 @@ def analyze_compact_package(
             f"Compact snapshot for task {root_task_id} was not found. "
             f"Run 'snapshot-compact {root_task_id}' first."
         )
-    if int(compact.get("schema_version", 1)) < 4:
+    if int(compact.get("schema_version", 1)) < 5:
         compact = compact_snapshot_package(connection, root_task_id)
     try:
         document_summaries = _summarize_legal_documents(

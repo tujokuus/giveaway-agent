@@ -65,6 +65,17 @@ async function openAndCapture(task) {
   // Give client-rendered forms a moment to appear after the load event.
   await new Promise((resolve) => setTimeout(resolve, 2500));
   await captureTabForTask(tab.id, task, { openLegalElements: task.document_type === "entry" });
+  await closeCapturedTab(tab.id);
+}
+
+async function closeCapturedTab(tabId) {
+  // Only tabs created and tracked by the extension are passed to this helper.
+  await chrome.storage.session.remove(`taskForTab_${tabId}`);
+  try {
+    await chrome.tabs.remove(tabId);
+  } catch (error) {
+    console.debug(`Giveaway Agent could not close tab ${tabId}:`, error.message);
+  }
 }
 
 async function readTabFrames(tabId) {
@@ -131,7 +142,7 @@ async function captureOpenedLegalTabs(openerTabId, knownTabs, interactionResults
     tab.id && !knownTabs.has(tab.id) && tab.openerTabId === openerTabId
   );
   const sections = [];
-  for (const tab of tabs.slice(0, 2)) {
+  for (const tab of tabs.slice(0, 3)) {
     if (!tab.url?.startsWith("http")) continue;
     if (tab.status !== "complete") {
       try {
@@ -151,8 +162,9 @@ async function captureOpenedLegalTabs(openerTabId, knownTabs, interactionResults
         text: main.visible_text.slice(0, 30000),
         visibility: "visible"
       });
+      await closeCapturedTab(tab.id);
     } catch (_error) {
-      // The original page snapshot remains useful even if a popup cannot be read.
+      // Keep an unreadable popup open so the user can inspect the failure.
     }
   }
   return sections;
@@ -161,7 +173,7 @@ async function captureOpenedLegalTabs(openerTabId, knownTabs, interactionResults
 function interactionDocumentTypes(interactionResults) {
   return [...new Set(interactionResults.flatMap((frame) =>
     (frame.result?.interactions || []).map((item) => item.document_type)
-  ))];
+  ))].filter((documentType) => ["rules", "privacy"].includes(documentType));
 }
 
 function sameDocumentUrl(first, second) {
@@ -239,7 +251,7 @@ function mergeFrames(
     frame.result?.interactions || []
   ).slice(0, 10);
   return {
-    schema_version: 2,
+    schema_version: 3,
     task_id: task.id,
     requested_url: task.url,
     final_url: main.url,

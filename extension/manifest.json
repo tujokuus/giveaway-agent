@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Giveaway Agent Reader",
-  "version": "0.3.0",
+  "version": "0.4.1",
   "description": "Safe page snapshots and controlled legal-content disclosure for Giveaway Agent.",
   "incognito": "not_allowed",
   "permissions": ["alarms", "scripting", "storage", "tabs"],

@@ -90,6 +90,25 @@ def compact_snapshot_package(
                     else "competition_privacy_policy"
                 ),
             ))
+    for interaction in entry.get("legal_interactions", []):
+        interaction_text = interaction.get("revealed_text", "")
+        if not interaction_text:
+            continue
+        document_type = interaction.get("document_type", "consent")
+        source_scope = (
+            "competition_specific_rules" if document_type == "rules"
+            else "competition_privacy_policy" if document_type == "privacy"
+            else "competition_page"
+        )
+        candidates.extend(_text_candidates(
+            interaction_text,
+            source_type="controlled_interaction",
+            document_type=document_type,
+            source_prefix=interaction.get("element_ref") or "legal_interaction",
+            visibility="visible",
+            source_task_id=root_task_id,
+            source_scope=source_scope,
+        ))
     for document in prepared["legal_documents"]:
         if not document["source_available"]:
             continue
@@ -118,7 +137,7 @@ def compact_snapshot_package(
     evidence, duplicate_count, omitted_count = _select_evidence(candidates)
     compacted_at = datetime.now(UTC).isoformat()
     package = {
-        "schema_version": 4,
+        "schema_version": 5,
         "source_task_id": root_task_id,
         "competition_id": prepared["competition_id"],
         "compacted_at": compacted_at,
@@ -157,7 +176,7 @@ def compact_snapshot_package(
             "duplicates_removed": duplicate_count,
             "relevant_blocks_omitted_by_limits": omitted_count,
             "total_evidence_characters": sum(len(item["text"]) for item in evidence),
-            "method": "topic_capped_legal_evidence_v4",
+            "method": "scored_interaction_and_topic_capped_evidence_v5",
         },
     }
     with connection:
@@ -166,7 +185,7 @@ def compact_snapshot_package(
             """
             INSERT INTO compact_snapshots (
                 root_task_id, schema_version, payload_json, compacted_at
-            ) VALUES (?, 4, ?, ?)
+            ) VALUES (?, 5, ?, ?)
             ON CONFLICT(root_task_id) DO UPDATE SET
                 schema_version = excluded.schema_version,
                 payload_json = excluded.payload_json,

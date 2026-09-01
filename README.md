@@ -206,13 +206,20 @@ It does not use an LLM and does not interact with the form.
 
 When an entry snapshot contains direct HTTP(S) links classified as privacy or
 rules documents, the backend automatically queues those URLs as related tasks.
-For rules and privacy controls without a distinct URL, the extension may perform
-one of two predefined disclosure clicks in the main frame. Supported disclosures
-include hash links, `aria-controls`, `details/summary`, common modal data
-attributes, link roles, button roles and legal controls with click handlers. It
-captures the DOM before and after the click and keeps newly revealed legal text
-or a legal page opened by that control. Submit controls, labels, fields and
-consent controls are never changed.
+For rules, privacy and consent details without a distinct URL, the extension
+scores visible disclosure candidates and opens at most one candidate of each
+type. Signals include legal text, normal links and buttons, hash links,
+`aria-controls`, `aria-haspopup`, `details/summary`, common modal data
+attributes, link-like classes, pointer styling and framework click handlers.
+Explicit semantic signals receive the highest score; elements inside a form
+label receive a safety penalty. The extension records each newly revealed
+dialog separately. Submit controls, labels and fields are never selected.
+Original input, select and checkbox DOM values are compared before and after
+every disclosure attempt and restored if a page handler changes them.
+After a snapshot has been uploaded successfully, the extension closes the task
+tab it created. A separate legal-document tab is likewise closed after its text
+has been captured. Tabs that cannot be read are left open for manual diagnosis,
+and tabs that were not opened by the extension are never closed.
 An element that reveals no readable text is retained as unresolved.
 
 After the entry page and its queued legal-document tasks have completed, build
@@ -293,6 +300,21 @@ Limit the batch to the next five pending competition IDs:
 ```powershell
 giveaway-run-next 5
 ```
+
+Run all competitions again even when they already have a saved analysis:
+
+```powershell
+giveaway-run-all --force
+```
+
+Limit a forced rerun to the first ten competition IDs:
+
+```powershell
+giveaway-run-next 10 --force --llm-timeout 3600
+```
+
+`--force` creates new snapshot tasks, compact packages and analyses. It does not
+delete or overwrite the earlier runs.
 
 Pending competitions are processed sequentially in ascending competition-ID order.
 A competition counts as complete when at least one root snapshot task has a saved
@@ -389,7 +411,7 @@ A later local analysis agent can read a stored snapshot through the authenticate
 endpoint `GET /api/v1/tasks/{task_id}/snapshot`. Returned page content remains
 untrusted data and must never be treated as agent instructions.
 
-The extension only performs predefined legal-disclosure clicks. It contains no
+The extension only performs scored, predefined disclosure clicks. It contains no
 model-requested arbitrary JavaScript, filling, selecting, checking or form
 submission features. CAPTCHA and Cloudflare pages are marked
 `manual_verification_required` for the user.
